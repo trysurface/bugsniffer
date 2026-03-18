@@ -105,13 +105,13 @@ The Dockerfile uses a multi-stage build: compile TS in a builder stage, copy onl
 
 Railway env vars are set in the Railway dashboard (not committed).
 
-## Message filtering
+## Message filtering & thread loop
 
-Only top-level, non-bot, non-empty messages in the target channel are processed. See `shouldSkipMessage()` in `src/slack.ts` for the full list.
+Top-level messages are classified immediately. If a message is a bug but lacks detail, the bot replies in-thread asking for more, and stores the thread in `pendingThreads` (in-memory Map). Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
 
-## Slack confirmation
+Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in `pendingThreads`.
 
-On ticket creation, replies in-thread: `:bug: Added to Bug Tracker: "Title" — Not started.` (links to Notion DB view).
+**Note:** `pendingThreads` is in-memory — cleared on restart.
 
 ## Future work
 
@@ -119,7 +119,7 @@ On ticket creation, replies in-thread: `:bug: Added to Bug Tracker: "Title" — 
 - **New Notion fields:** Update `src/notion.ts` → `createBugTicket()` + DB schema
 - **Emoji triage:** `reaction_added` event already subscribed — implement handler in `src/slack.ts`
 - **Priority detection:** Extend classifier JSON → map to Notion property
-- **Status sync / thread context:** Not yet implemented
+- **Persist pending threads:** Survive restarts via Redis or similar
 
 ## Gotchas
 
@@ -131,3 +131,4 @@ On ticket creation, replies in-thread: `:bug: Added to Bug Tracker: "Title" — 
 ## Changelog
 
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
+- **2026-03-18** — Thread follow-up loop: bot asks for detail on thin reports, re-classifies replies, creates ticket when sufficient.

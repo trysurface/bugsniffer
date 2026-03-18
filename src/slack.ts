@@ -15,6 +15,12 @@ interface SlackMessage {
   files?: unknown[];
 }
 
+/**
+ * Threads where we asked for more detail: thread_ts -> original message text.
+ * In-memory only — cleared on restart.
+ */
+const pendingThreads = new Map<string, string>();
+
 export function createSlackApp(): App {
   const app = new App({
     token: config.slack.botToken,
@@ -45,8 +51,7 @@ function shouldSkipMessage(message: SlackMessage): boolean {
   if (message.channel !== config.slack.channelId) return true;
 
   // Bot messages
-  if (message.bot_id || message.subtype === "bot_message")
-    return true;
+  if (message.bot_id || message.subtype === "bot_message") return true;
 
   // System subtypes (joins, topic changes, etc.)
   const skipSubtypes = new Set([
@@ -59,12 +64,10 @@ function shouldSkipMessage(message: SlackMessage): boolean {
   ]);
   if (message.subtype && skipSubtypes.has(message.subtype)) return true;
 
-  // Thread replies (only process top-level messages)
-  if (
-    message.thread_ts &&
-    message.thread_ts !== message.ts
-  )
-    return true;
+  // Thread replies — only allow if we're waiting on this thread
+  if (message.thread_ts && message.thread_ts !== message.ts) {
+    if (!pendingThreads.has(message.thread_ts)) return true;
+  }
 
   // Empty
   if (!message.text?.trim()) return true;
@@ -78,6 +81,15 @@ async function handleMessage(
 ): Promise<void> {
   if (shouldSkipMessage(message)) return;
 
+  const isThreadReply = !!(
+    message.thread_ts && message.thread_ts !== message.ts
+  );
+
+  if (isThreadReply) {
+    await handleThreadFollowUp(message, say);
+    return;
+  }
+
   const text = message.text!;
   const hasFiles = !!(message.files?.length);
   const ts = new Date().toISOString();
@@ -86,9 +98,7 @@ async function handleMessage(
     `[${ts}] 📩 New message from ${message.user}: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`
   );
 
-  // Classify with Claude
   const result = await classifyMessage(text, hasFiles);
-
   console.log(`[${ts}] 🔍 Classification:`, JSON.stringify(result));
 
   if (!result.is_bug) {
@@ -97,20 +107,63 @@ async function handleMessage(
   }
 
   if (!result.has_sufficient_detail) {
-    console.log(`  → Bug but insufficient detail. Skipping.`);
+    console.log(`  → Bug but insufficient detail. Asking for more info.`);
+    pendingThreads.set(message.ts!, text);
+    await say({
+      text: "Thanks for the report! To create a ticket I need a bit more detail — could you share steps to reproduce, a screenshot, or a Loom video?",
+      thread_ts: message.ts,
+    });
     return;
   }
 
-  // Create Notion ticket
-  const slackLink = buildSlackPermalink(config.slack.channelId, message.ts!);
-  const title = result.suggested_title || text.slice(0, 100);
+  await createTicketAndConfirm(result.suggested_title, text, message.ts!, say);
+}
+
+async function handleThreadFollowUp(
+  message: SlackMessage,
+  say: Function
+): Promise<void> {
+  const threadTs = message.thread_ts!;
+  const originalText = pendingThreads.get(threadTs)!;
+  const combinedText = `${originalText}\n\nFollow-up from reporter: ${message.text}`;
+  const hasFiles = !!(message.files?.length);
+  const ts = new Date().toISOString();
+
+  console.log(
+    `[${ts}] 🧵 Follow-up in pending thread ${threadTs} from ${message.user}`
+  );
+
+  const result = await classifyMessage(combinedText, hasFiles);
+  console.log(`[${ts}] 🔍 Re-classification:`, JSON.stringify(result));
+
+  if (!result.is_bug || !result.has_sufficient_detail) {
+    console.log(`  → Still insufficient detail.`);
+    await say({
+      text: "Still a bit light on detail — steps to reproduce or a screenshot would really help!",
+      thread_ts: threadTs,
+    });
+    return;
+  }
+
+  pendingThreads.delete(threadTs);
+  await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, threadTs);
+}
+
+async function createTicketAndConfirm(
+  suggestedTitle: string | null,
+  text: string,
+  messageTs: string,
+  say: Function,
+  threadTs?: string
+): Promise<void> {
+  const slackLink = buildSlackPermalink(config.slack.channelId, messageTs);
+  const title = suggestedTitle || text.slice(0, 100);
   const ticket = await createBugTicket(title, slackLink);
 
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 
-  // Confirm in-thread
   await say({
     text: `:bug: Added to <${config.notion.databaseUrl}|Bug Tracker>: *"${title}"* — Not started.`,
-    thread_ts: message.ts,
+    thread_ts: threadTs ?? messageTs,
   });
 }
