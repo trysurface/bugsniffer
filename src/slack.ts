@@ -2,6 +2,12 @@ import { App } from "@slack/bolt";
 import { config } from "./config.js";
 import { classifyMessage } from "./classifier.js";
 import { createBugTicket } from "./notion.js";
+import {
+  hasPendingThread,
+  getPendingThread,
+  setPendingThread,
+  deletePendingThread,
+} from "./store.js";
 
 /** Subset of the Slack message event fields we actually use. */
 interface SlackMessage {
@@ -14,12 +20,6 @@ interface SlackMessage {
   thread_ts?: string;
   files?: unknown[];
 }
-
-/**
- * Threads where we asked for more detail: thread_ts -> original message text.
- * In-memory only — cleared on restart.
- */
-const pendingThreads = new Map<string, string>();
 
 export function createSlackApp(): App {
   const app = new App({
@@ -64,10 +64,8 @@ function shouldSkipMessage(message: SlackMessage): boolean {
   ]);
   if (message.subtype && skipSubtypes.has(message.subtype)) return true;
 
-  // Thread replies — only allow if we're waiting on this thread
-  if (message.thread_ts && message.thread_ts !== message.ts) {
-    if (!pendingThreads.has(message.thread_ts)) return true;
-  }
+  // Thread replies — only allow if we're waiting on this thread (checked async below)
+  // Actual pending check happens in handleMessage after this sync guard.
 
   // Empty
   if (!message.text?.trim()) return true;
@@ -86,6 +84,8 @@ async function handleMessage(
   );
 
   if (isThreadReply) {
+    // Only process replies in threads we're waiting on
+    if (!(await hasPendingThread(message.thread_ts!))) return;
     await handleThreadFollowUp(message, say);
     return;
   }
@@ -108,7 +108,7 @@ async function handleMessage(
 
   if (!result.has_sufficient_detail) {
     console.log(`  → Bug but insufficient detail. Asking for more info.`);
-    pendingThreads.set(message.ts!, text);
+    await setPendingThread(message.ts!, text);
     await say({
       text: "Thanks for the report! To create a ticket I need a bit more detail — could you share steps to reproduce, a screenshot, or a Loom video?",
       thread_ts: message.ts,
@@ -124,7 +124,7 @@ async function handleThreadFollowUp(
   say: Function
 ): Promise<void> {
   const threadTs = message.thread_ts!;
-  const originalText = pendingThreads.get(threadTs)!;
+  const originalText = (await getPendingThread(threadTs))!;
   const combinedText = `${originalText}\n\nFollow-up from reporter: ${message.text}`;
   const hasFiles = !!(message.files?.length);
   const ts = new Date().toISOString();
@@ -145,7 +145,7 @@ async function handleThreadFollowUp(
     return;
   }
 
-  pendingThreads.delete(threadTs);
+  await deletePendingThread(threadTs);
   await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, threadTs);
 }
 

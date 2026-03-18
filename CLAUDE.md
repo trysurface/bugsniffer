@@ -41,6 +41,7 @@ Slack (Socket Mode) → Message handler → Claude classifier → Notion ticket 
 - `src/classifier.ts` — Claude-powered message classification
 - `src/slack.ts` — Slack Bolt app, message event handler, orchestration
 - `src/notion.ts` — Notion ticket creation
+- `src/store.ts` — pending thread persistence (Redis or in-memory fallback)
 - `src/health.ts` — HTTP health check server (Railway needs a PORT listener)
 
 ## How the classification works
@@ -86,6 +87,7 @@ When creating tickets, we set: Name, Status ("Not started"), and Slack Thread UR
 | `SLACK_CHANNEL_ID` | ❌ | Override channel (default: C0880RJL3SL) |
 | `NOTION_DATABASE_ID` | ❌ | Override database (default: 32744c625b9f804db76ee0aa3d82499d) |
 | `CLASSIFIER_MODEL` | ❌ | Override Claude model (default: claude-sonnet-4-20250514) |
+| `REDIS_URL` | ❌ | Redis connection URL for pending thread persistence (falls back to in-memory if unset) |
 | `PORT` | ❌ | Health check port (default: 3000) |
 
 ## Commands
@@ -107,11 +109,11 @@ Railway env vars are set in the Railway dashboard (not committed).
 
 ## Message filtering & thread loop
 
-Top-level messages are classified immediately. If a message is a bug but lacks detail, the bot replies in-thread asking for more, and stores the thread in `pendingThreads` (in-memory Map). Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
+Top-level messages are classified immediately. If a message is a bug but lacks detail, the bot replies in-thread asking for more, and persists the thread via `src/store.ts`. Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
 
-Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in `pendingThreads`.
+Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in the pending store.
 
-**Note:** `pendingThreads` is in-memory — cleared on restart.
+Pending threads stored in Redis with a 30-day TTL. Falls back to in-memory Map if `REDIS_URL` is not set.
 
 ## Future work
 
@@ -119,7 +121,6 @@ Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in 
 - **New Notion fields:** Update `src/notion.ts` → `createBugTicket()` + DB schema
 - **Emoji triage:** `reaction_added` event already subscribed — implement handler in `src/slack.ts`
 - **Priority detection:** Extend classifier JSON → map to Notion property
-- **Persist pending threads:** Survive restarts via Redis or similar
 
 ## Gotchas
 
@@ -132,3 +133,4 @@ Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in 
 
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
 - **2026-03-18** — Thread follow-up loop: bot asks for detail on thin reports, re-classifies replies, creates ticket when sufficient.
+- **2026-03-18** — Redis persistence for pending threads via `src/store.ts` (ioredis); falls back to in-memory if `REDIS_URL` unset.
