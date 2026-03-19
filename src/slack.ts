@@ -1,6 +1,6 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
-import { classifyMessage, findDuplicate, isProvidingBugDetail } from "./classifier.js";
+import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
 import { createBugTicket, getUnresolvedBugs, appendSlackLink } from "./notion.js";
 import {
   hasPendingThread,
@@ -127,10 +127,28 @@ async function handleThreadFollowUp(
   const threadTs = message.thread_ts!;
   const hasFiles = !!(message.files?.length);
   const ts = new Date().toISOString();
+  const stored = (await getPendingThread(threadTs))!;
 
   console.log(
     `[${ts}] 🧵 Follow-up in pending thread ${threadTs} from ${message.user}`
   );
+
+  // Handle dupe-dispute threads
+  if (stored.startsWith("DUPE:")) {
+    const originalText = stored.slice(5);
+    const disputing = await isDisputingDupe(message.text ?? "");
+    if (!disputing) {
+      console.log(`  → Reply in dupe thread is not a dispute. Ignoring.`);
+      return;
+    }
+
+    console.log(`  → Dupe disputed! Creating new ticket.`);
+    await deletePendingThread(threadTs);
+    const classResult = await classifyMessage(originalText, hasFiles);
+    const title = classResult.suggested_title || originalText.slice(0, 100);
+    await createTicketAndConfirm(title, originalText, threadTs, say, client, threadTs);
+    return;
+  }
 
   // Only process if the reply is actually adding bug detail, not just conversation
   const providingDetail = await isProvidingBugDetail(message.text ?? "", hasFiles);
@@ -139,8 +157,7 @@ async function handleThreadFollowUp(
     return;
   }
 
-  const originalText = (await getPendingThread(threadTs))!;
-  const combinedText = `${originalText}\n\nFollow-up from reporter: ${message.text}`;
+  const combinedText = `${stored}\n\nFollow-up from reporter: ${message.text}`;
 
   const result = await classifyMessage(combinedText, hasFiles);
   console.log(`[${ts}] 🔍 Re-classification:`, JSON.stringify(result));
@@ -196,9 +213,13 @@ async function checkForDuplicate(
   await appendSlackLink(match.id, slackLink);
 
   await say({
-    text: `:link: Looks like this bug has already been reported: *"${match.title}"*\n\nThe <${match.url}|Notion ticket> has been updated with a link to this message — no new ticket created.`,
+    text: `:link: Looks like this bug has already been reported: *"${match.title}"*\n\nThe <${match.url}|Notion ticket> has been updated with a link to this message — no new ticket created. If this is actually a different issue, let me know and I'll create a separate ticket.`,
     thread_ts: threadTs ?? messageTs,
   });
+
+  // Track this thread so we can handle disputes
+  const replyTo = threadTs ?? messageTs;
+  await setPendingThread(replyTo, `DUPE:${text}`);
 
   return true;
 }

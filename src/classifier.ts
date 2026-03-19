@@ -123,6 +123,43 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   }
 }
 
+/**
+ * Check if a thread reply is disputing the bot's duplicate classification.
+ * E.g. "that's a different bug", "no this is a new issue", "not the same thing".
+ */
+export async function isDisputingDupe(replyText: string): Promise<boolean> {
+  const prompt = `You are analyzing a reply in a Slack thread where a bot said a bug report was a duplicate of an existing ticket. Determine if this reply is disputing that classification — i.e. the person is saying it's NOT a duplicate and IS a different/new bug.
+
+Examples of disputes: "that's a different bug", "no this is a new issue", "not the same", "this is separate", "wrong ticket"
+Examples of NON-disputes: "ok thanks", "got it", "can you assign it to me?", general conversation
+
+Reply text:
+"""
+${replyText}
+"""
+
+Respond with ONLY a valid JSON object (no markdown, no backticks):
+{
+  "is_disputing": true/false,
+  "reasoning": "Brief explanation"
+}`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 200,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const raw =
+      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    return JSON.parse(raw).is_disputing === true;
+  } catch (err) {
+    console.error("[classifier] Failed to check dupe dispute:", err);
+    return false;
+  }
+}
+
 export interface DuplicateResult {
   is_duplicate: boolean;
   matching_bug_id: string | null;
