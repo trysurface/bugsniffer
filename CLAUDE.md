@@ -111,9 +111,9 @@ Railway env vars are set in the Railway dashboard (not committed).
 
 ## Message filtering & thread loop
 
-Top-level messages are classified immediately. If classified as a bug, the bot first checks for duplicate unresolved tickets in Notion (via Claude matching against existing titles). If a match is found, the new Slack message URL is appended to the existing ticket's body — no new ticket is created and no detail prompt is sent. If no match and the bug lacks detail, the bot replies asking for more info and persists the thread via `src/store.ts`. Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
+Top-level messages are classified immediately. If classified as a bug, the bot checks for duplicate unresolved tickets in Notion (via Claude). If a duplicate is found, the new Slack URL is appended to the existing ticket and the reporter is told — they can dispute ("that's a different bug") to force a new ticket. If no duplicate and the bug lacks detail, the bot asks for more info. Thread replies in pending threads are only processed if they're actually providing bug detail (not just conversation); conversational replies are silently ignored.
 
-Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in the pending store.
+Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in the pending store. Pending store uses `DUPE:` prefix to distinguish dupe-dispute threads from needs-detail threads.
 
 Pending threads stored in Redis with a 30-day TTL. Falls back to in-memory Map if `REDIS_URL` is not set.
 
@@ -140,8 +140,10 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
-- **2026-03-19** — Duplicate detection: new bug reports are matched against unresolved Notion tickets via Claude; duplicates link to existing ticket instead of creating a new one.
-- **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API. Manual URL was missing workspace subdomain.
+- **2026-03-19** — Dupe dispute: users can reply "that's a different bug" to override a duplicate classification and create a new ticket.
+- **2026-03-19** — Thread follow-up filter: bot only responds to replies that provide bug detail, ignores conversation.
+- **2026-03-19** — Duplicate detection: new bug reports matched against unresolved Notion tickets via Claude; dupes link to existing ticket.
+- **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API.
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
 - **2026-03-18** — Thread follow-up loop: bot asks for detail on thin reports, re-classifies replies, creates ticket when sufficient.
 - **2026-03-18** — Redis persistence for pending threads via `src/store.ts` (ioredis); falls back to in-memory if `REDIS_URL` unset.
