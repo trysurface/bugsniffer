@@ -122,15 +122,23 @@ Pending threads stored in Redis with a 30-day TTL. Falls back to in-memory Map i
 - **Emoji triage:** `reaction_added` event already subscribed — implement handler in `src/slack.ts`
 - **Priority detection:** Extend classifier JSON → map to Notion property
 
+## Manual data fixes via MCP
+
+Notion and Slack MCP servers are configured for this project. Use them in Claude Code to query and fix data directly (e.g. correcting Slack Thread URLs, backfilling missed tickets, fixing bot replies in wrong threads). See `claude mcp list` for configured servers.
+
+**When manual fixes are needed, always review app code to diagnose why.** Manual intervention (wrong Notion data, missed bug reports, bot replying in the wrong place, not responding at all) signals a code bug — fix the root cause, not just the data.
+
 ## Gotchas
 
 - The Notion SDK typing for `pages.create()` response doesn't include `.url` directly — we cast through `any` in `src/notion.ts`
 - Slack Socket Mode requires the `SLACK_APP_TOKEN` (app-level token), separate from the bot token
 - The bot must be invited to the channel (`/invite @BotName`) or it won't receive messages
 - The Notion integration must be shared with the Bug Tracker database (database ⋯ → Connections → Add)
+- Always use `client.chat.getPermalink()` for Slack URLs — never construct them manually (workspace subdomain varies)
 
 ## Changelog
 
+- **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API. Manual URL was missing workspace subdomain.
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
 - **2026-03-18** — Thread follow-up loop: bot asks for detail on thin reports, re-classifies replies, creates ticket when sufficient.
 - **2026-03-18** — Redis persistence for pending threads via `src/store.ts` (ioredis); falls back to in-memory if `REDIS_URL` unset.

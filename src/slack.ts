@@ -28,9 +28,9 @@ export function createSlackApp(): App {
     socketMode: true,
   });
 
-  app.message(async ({ message, say }) => {
+  app.message(async ({ message, say, client }) => {
     try {
-      await handleMessage(message as SlackMessage, say);
+      await handleMessage(message as SlackMessage, say, client);
     } catch (err) {
       console.error("[slack] Error handling message:", err);
     }
@@ -40,11 +40,6 @@ export function createSlackApp(): App {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function buildSlackPermalink(channelId: string, messageTs: string): string {
-  const tsNoDot = messageTs.replace(".", "");
-  return `https://slack.com/archives/${channelId}/p${tsNoDot}`;
-}
 
 function shouldSkipMessage(message: SlackMessage): boolean {
   // Wrong channel
@@ -75,7 +70,8 @@ function shouldSkipMessage(message: SlackMessage): boolean {
 
 async function handleMessage(
   message: SlackMessage,
-  say: Function
+  say: Function,
+  client: any
 ): Promise<void> {
   if (shouldSkipMessage(message)) return;
 
@@ -86,7 +82,7 @@ async function handleMessage(
   if (isThreadReply) {
     // Only process replies in threads we're waiting on
     if (!(await hasPendingThread(message.thread_ts!))) return;
-    await handleThreadFollowUp(message, say);
+    await handleThreadFollowUp(message, say, client);
     return;
   }
 
@@ -116,12 +112,13 @@ async function handleMessage(
     return;
   }
 
-  await createTicketAndConfirm(result.suggested_title, text, message.ts!, say);
+  await createTicketAndConfirm(result.suggested_title, text, message.ts!, say, client, undefined);
 }
 
 async function handleThreadFollowUp(
   message: SlackMessage,
-  say: Function
+  say: Function,
+  client: any
 ): Promise<void> {
   const threadTs = message.thread_ts!;
   const originalText = (await getPendingThread(threadTs))!;
@@ -146,7 +143,7 @@ async function handleThreadFollowUp(
   }
 
   await deletePendingThread(threadTs);
-  await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, threadTs);
+  await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, client, threadTs);
 }
 
 async function createTicketAndConfirm(
@@ -154,9 +151,14 @@ async function createTicketAndConfirm(
   text: string,
   messageTs: string,
   say: Function,
+  client: any,
   threadTs?: string
 ): Promise<void> {
-  const slackLink = buildSlackPermalink(config.slack.channelId, messageTs);
+  const permalinkResponse = await client.chat.getPermalink({
+    channel: config.slack.channelId,
+    message_ts: messageTs,
+  });
+  const slackLink = permalinkResponse.permalink as string;
   const title = suggestedTitle || text.slice(0, 100);
   const ticket = await createBugTicket(title, slackLink);
 
