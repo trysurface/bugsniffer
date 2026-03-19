@@ -39,7 +39,79 @@ export function createSlackApp(): App {
   return app;
 }
 
+// ── Debounce ────────────────────────────────────────────────────────────────
+
+const DEBOUNCE_MS = 3000;
+const debounceTimers = new Map<string, NodeJS.Timeout>();
+const debouncedContexts = new Map<string, { message: SlackMessage; say: Function; client: any }>();
+
+/**
+ * Debounce message processing. Groups by thread_ts (for replies) or
+ * user ID (for top-level messages). Waits DEBOUNCE_MS after the last
+ * message before processing, so rapid-fire messages are batched.
+ */
+function debounceMessage(
+  key: string,
+  message: SlackMessage,
+  say: Function,
+  client: any
+): void {
+  // Always keep the latest message context
+  debouncedContexts.set(key, { message, say, client });
+
+  // Clear existing timer and set a new one
+  const existing = debounceTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  debounceTimers.set(
+    key,
+    setTimeout(async () => {
+      debounceTimers.delete(key);
+      const ctx = debouncedContexts.get(key);
+      debouncedContexts.delete(key);
+      if (!ctx) return;
+
+      try {
+        await processMessage(ctx.message, ctx.say, ctx.client);
+      } catch (err) {
+        console.error("[slack] Error handling debounced message:", err);
+      }
+    }, DEBOUNCE_MS)
+  );
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch recent top-level messages from the same user within a short window
+ * (to combine rapid-fire messages like "bug in lead scoring" + "for eragon").
+ */
+async function getRecentUserMessages(
+  client: any,
+  channel: string,
+  userId: string,
+  latestTs: string
+): Promise<string | null> {
+  const result = await client.conversations.history({
+    channel,
+    latest: latestTs,
+    limit: 5,
+    inclusive: true,
+  });
+  const messages: any[] = result.messages ?? [];
+  // Collect consecutive messages from the same user (no thread, no bot)
+  const cutoff = parseFloat(latestTs) - 30; // 30-second window
+  const userMessages = [];
+  for (const m of messages) {
+    if (m.user !== userId) break;
+    if (m.bot_id || m.thread_ts) break;
+    if (parseFloat(m.ts) < cutoff) break;
+    userMessages.push(m.text ?? "");
+  }
+  if (userMessages.length <= 1) return null;
+  // Messages come newest-first, reverse to chronological
+  return userMessages.reverse().join("\n");
+}
 
 /** Fetch recent non-bot replies in a thread, joined into a single string. */
 async function getRecentUserReplies(
@@ -98,13 +170,34 @@ async function handleMessage(
   );
 
   if (isThreadReply) {
-    // Only process replies in threads we're waiting on
     if (!(await hasPendingThread(message.thread_ts!))) return;
+    // Debounce by thread
+    debounceMessage(message.thread_ts!, message, say, client);
+    return;
+  }
+
+  // Debounce top-level messages by user
+  debounceMessage(`user:${message.user}`, message, say, client);
+}
+
+/** Called after the debounce window closes. */
+async function processMessage(
+  message: SlackMessage,
+  say: Function,
+  client: any
+): Promise<void> {
+  const isThreadReply = !!(
+    message.thread_ts && message.thread_ts !== message.ts
+  );
+
+  if (isThreadReply) {
     await handleThreadFollowUp(message, say, client);
     return;
   }
 
-  const text = message.text!;
+  // For top-level messages, fetch recent messages from the user to combine rapid-fire posts
+  const recentText = await getRecentUserMessages(client, message.channel, message.user!, message.ts!);
+  const text = recentText || message.text!;
   const hasFiles = !!(message.files?.length);
   const ts = new Date().toISOString();
 
