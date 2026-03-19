@@ -32,8 +32,8 @@ export async function createBugTicket(
 
 /** Fetch all unresolved bugs (Status != "Done") from the Notion database. */
 export async function getUnresolvedBugs(): Promise<ExistingBug[]> {
-  const response = await (notion as any).databases.query({
-    database_id: config.notion.databaseId,
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.dataSourceId,
     filter: {
       property: "Status",
       status: { does_not_equal: "Done" },
