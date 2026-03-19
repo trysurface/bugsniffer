@@ -1,4 +1,5 @@
 import { Client } from "@notionhq/client";
+import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
 import { config } from "./config.js";
 
 const notion = new Client({ auth: config.notion.apiKey });
@@ -14,6 +15,10 @@ export interface ExistingBug {
   url: string;
 }
 
+function isFullPage(page: { object: string }): page is PageObjectResponse {
+  return page.object === "page" && "url" in page && "properties" in page;
+}
+
 export async function createBugTicket(
   title: string,
   slackThreadUrl: string
@@ -27,7 +32,8 @@ export async function createBugTicket(
     },
   });
 
-  return { id: page.id, url: (page as any).url as string };
+  if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
+  return { id: page.id, url: page.url };
 }
 
 /** Fetch all unresolved bugs (Status != "Done") from the Notion database. */
@@ -40,12 +46,16 @@ export async function getUnresolvedBugs(): Promise<ExistingBug[]> {
     },
   });
 
-  return response.results.map((page: any) => ({
-    id: page.id,
-    title:
-      page.properties.Name?.title?.[0]?.text?.content ?? "(untitled)",
-    url: page.url as string,
-  }));
+  return response.results
+    .filter(isFullPage)
+    .map((page) => {
+      const nameProp = page.properties.Name;
+      const title =
+        nameProp.type === "title"
+          ? nameProp.title[0]?.plain_text ?? "(untitled)"
+          : "(untitled)";
+      return { id: page.id, title, url: page.url };
+    });
 }
 
 /** Append a "Also reported in: <slackUrl>" line to an existing ticket's body. */
@@ -63,7 +73,7 @@ export async function appendSlackLink(
             { text: { content: slackUrl, link: { url: slackUrl } } },
           ],
         },
-      } as any,
+      },
     ],
   });
 }

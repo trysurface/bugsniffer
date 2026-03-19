@@ -107,6 +107,8 @@ The Dockerfile uses a multi-stage build: compile TS in a builder stage, copy onl
 
 Railway env vars are set in the Railway dashboard (not committed).
 
+**Debugging:** Railway CLI is linked to the `bugsniffer` service. Use `railway logs -n 80` to fetch recent logs, or `railway logs` to stream live. Always check logs after deploying new features.
+
 ## Message filtering & thread loop
 
 Top-level messages are classified immediately. If classified as a bug, the bot first checks for duplicate unresolved tickets in Notion (via Claude matching against existing titles). If a match is found, the new Slack message URL is appended to the existing ticket's body — no new ticket is created and no detail prompt is sent. If no match and the bug lacks detail, the bot replies asking for more info and persists the thread via `src/store.ts`. Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
@@ -130,7 +132,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Gotchas
 
-- The Notion SDK typing for `pages.create()` response doesn't include `.url` directly — we cast through `any` in `src/notion.ts`
+- **Never use `as any` to silence type errors.** If the SDK types don't match, check the SDK version's actual API surface (e.g. Notion SDK v5 moved `databases.query` → `dataSources.query`). Casting hides runtime errors.
 - Slack Socket Mode requires the `SLACK_APP_TOKEN` (app-level token), separate from the bot token
 - The bot must be invited to the channel (`/invite @BotName`) or it won't receive messages
 - The Notion integration must be shared with the Bug Tracker database (database ⋯ → Connections → Add)
