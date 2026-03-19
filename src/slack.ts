@@ -1,7 +1,7 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
-import { classifyMessage } from "./classifier.js";
-import { createBugTicket } from "./notion.js";
+import { classifyMessage, findDuplicate } from "./classifier.js";
+import { createBugTicket, getUnresolvedBugs, appendSlackLink } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -102,6 +102,10 @@ async function handleMessage(
     return;
   }
 
+  // Check for duplicate before creating a new ticket or asking for detail
+  const duplicate = await checkForDuplicate(text, message.ts!, say, client);
+  if (duplicate) return;
+
   if (!result.has_sufficient_detail) {
     console.log(`  → Bug but insufficient detail. Asking for more info.`);
     await setPendingThread(message.ts!, text);
@@ -142,8 +146,53 @@ async function handleThreadFollowUp(
     return;
   }
 
+  // Check for duplicate before creating a new ticket
+  const duplicate = await checkForDuplicate(combinedText, threadTs, say, client, threadTs);
+  if (duplicate) {
+    await deletePendingThread(threadTs);
+    return;
+  }
+
   await deletePendingThread(threadTs);
   await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, client, threadTs);
+}
+
+/**
+ * Check if the message matches an existing unresolved bug.
+ * If so, append the new Slack link to the existing ticket and reply.
+ * Returns true if a duplicate was found and handled.
+ */
+async function checkForDuplicate(
+  text: string,
+  messageTs: string,
+  say: Function,
+  client: any,
+  threadTs?: string
+): Promise<boolean> {
+  const existingBugs = await getUnresolvedBugs();
+  const dupResult = await findDuplicate(text, existingBugs);
+
+  if (!dupResult.is_duplicate || !dupResult.matching_bug_id) return false;
+
+  const match = existingBugs.find((b) => b.id === dupResult.matching_bug_id);
+  if (!match) return false;
+
+  console.log(`  → Duplicate of existing ticket: "${match.title}" (${match.id})`);
+
+  const permalinkResponse = await client.chat.getPermalink({
+    channel: config.slack.channelId,
+    message_ts: messageTs,
+  });
+  const slackLink = permalinkResponse.permalink as string;
+
+  await appendSlackLink(match.id, slackLink);
+
+  await say({
+    text: `:link: This looks like an existing bug: *"${match.title}"* — linked this message to the <${match.url}|existing ticket>.`,
+    thread_ts: threadTs ?? messageTs,
+  });
+
+  return true;
 }
 
 async function createTicketAndConfirm(

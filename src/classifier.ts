@@ -77,3 +77,64 @@ export async function classifyMessage(
     return FALLBACK;
   }
 }
+
+export interface DuplicateResult {
+  is_duplicate: boolean;
+  matching_bug_id: string | null;
+  reasoning: string;
+}
+
+/**
+ * Check if a new bug report matches an existing unresolved bug.
+ * Returns the matching bug ID if found, null otherwise.
+ */
+export async function findDuplicate(
+  messageText: string,
+  existingBugs: { id: string; title: string }[]
+): Promise<DuplicateResult> {
+  if (existingBugs.length === 0) {
+    return { is_duplicate: false, matching_bug_id: null, reasoning: "No existing bugs to compare against." };
+  }
+
+  const bugList = existingBugs
+    .map((b, i) => `${i + 1}. [${b.id}] ${b.title}`)
+    .join("\n");
+
+  const prompt = `You are a duplicate bug detector. Given a new Slack message reporting a bug and a list of existing unresolved bug tickets, determine if the new message is about the same issue as any existing ticket.
+
+A match means the message is clearly describing the same underlying problem — even if worded differently. For example:
+- "can u pls fix lead scoring issue for eragon form" matches "[Eragon] Lead scoring broken — Score column not showing"
+- "the logo keeps flickering on mobile" matches "[Eragon] Logo image flickering on mobile across form steps"
+
+Do NOT match if the message is about a different feature or a different aspect of the same feature.
+
+Existing unresolved bugs:
+${bugList}
+
+New Slack message:
+"""
+${messageText}
+"""
+
+Respond with ONLY a valid JSON object (no markdown, no backticks):
+{
+  "is_duplicate": true/false,
+  "matching_bug_id": "the [id] of the matching bug if duplicate, otherwise null",
+  "reasoning": "Brief explanation"
+}`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 300,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const raw =
+      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    return JSON.parse(raw) as DuplicateResult;
+  } catch (err) {
+    console.error("[classifier] Failed to check for duplicates:", err);
+    return { is_duplicate: false, matching_bug_id: null, reasoning: "Duplicate check failed — defaulting to new ticket." };
+  }
+}

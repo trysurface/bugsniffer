@@ -109,7 +109,7 @@ Railway env vars are set in the Railway dashboard (not committed).
 
 ## Message filtering & thread loop
 
-Top-level messages are classified immediately. If a message is a bug but lacks detail, the bot replies in-thread asking for more, and persists the thread via `src/store.ts`. Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
+Top-level messages are classified immediately. If classified as a bug, the bot first checks for duplicate unresolved tickets in Notion (via Claude matching against existing titles). If a match is found, the new Slack message URL is appended to the existing ticket's body — no new ticket is created and no detail prompt is sent. If no match and the bug lacks detail, the bot replies asking for more info and persists the thread via `src/store.ts`. Replies in pending threads are re-classified with combined context; on success a ticket is created and the thread is removed from pending.
 
 Non-bot, non-empty, correct-channel messages only. See `shouldSkipMessage()` in `src/slack.ts`. Thread replies are only processed if their `thread_ts` is in the pending store.
 
@@ -138,6 +138,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-03-19** — Duplicate detection: new bug reports are matched against unresolved Notion tickets via Claude; duplicates link to existing ticket instead of creating a new one.
 - **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API. Manual URL was missing workspace subdomain.
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
 - **2026-03-18** — Thread follow-up loop: bot asks for detail on thin reports, re-classifies replies, creates ticket when sufficient.
