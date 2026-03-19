@@ -188,7 +188,7 @@ async function checkForDuplicate(
   await appendSlackLink(match.id, slackLink);
 
   await say({
-    text: `:link: This looks like an existing bug: *"${match.title}"* — linked this message to the <${match.url}|existing ticket>.`,
+    text: `:link: Looks like this bug has already been reported: *"${match.title}"*\n\nThe <${match.url}|Notion ticket> has been updated with a link to this message — no new ticket created.`,
     thread_ts: threadTs ?? messageTs,
   });
 
