@@ -78,6 +78,51 @@ export async function classifyMessage(
   }
 }
 
+/**
+ * Check if a thread reply is providing additional bug detail (screenshots,
+ * steps to reproduce, etc.) vs just having a conversation. Returns true only
+ * if the reply is clearly adding information relevant to diagnosing the bug.
+ */
+export async function isProvidingBugDetail(
+  replyText: string,
+  hasFiles: boolean
+): Promise<boolean> {
+  const prompt = `You are analyzing a reply in a Slack thread about a bug report. The bot previously asked for more detail (steps to reproduce, screenshots, or a Loom video).
+
+Determine if this reply is actually providing additional information to help diagnose the bug — e.g. steps to reproduce, error messages, screenshots, Loom links, or a more specific description of the problem.
+
+If the reply is just conversation, an acknowledgment, a question unrelated to the bug details, or chit-chat between teammates, answer false.
+
+The reply has file attachments: ${hasFiles ? "YES" : "NO"}
+
+Reply text:
+"""
+${replyText}
+"""
+
+Respond with ONLY a valid JSON object (no markdown, no backticks):
+{
+  "is_providing_detail": true/false,
+  "reasoning": "Brief explanation"
+}`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 200,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const raw =
+      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const result = JSON.parse(raw);
+    return result.is_providing_detail === true;
+  } catch (err) {
+    console.error("[classifier] Failed to check if reply provides detail:", err);
+    return false;
+  }
+}
+
 export interface DuplicateResult {
   is_duplicate: boolean;
   matching_bug_id: string | null;

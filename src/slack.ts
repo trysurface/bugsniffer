@@ -1,6 +1,6 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
-import { classifyMessage, findDuplicate } from "./classifier.js";
+import { classifyMessage, findDuplicate, isProvidingBugDetail } from "./classifier.js";
 import { createBugTicket, getUnresolvedBugs, appendSlackLink } from "./notion.js";
 import {
   hasPendingThread,
@@ -125,14 +125,22 @@ async function handleThreadFollowUp(
   client: any
 ): Promise<void> {
   const threadTs = message.thread_ts!;
-  const originalText = (await getPendingThread(threadTs))!;
-  const combinedText = `${originalText}\n\nFollow-up from reporter: ${message.text}`;
   const hasFiles = !!(message.files?.length);
   const ts = new Date().toISOString();
 
   console.log(
     `[${ts}] 🧵 Follow-up in pending thread ${threadTs} from ${message.user}`
   );
+
+  // Only process if the reply is actually adding bug detail, not just conversation
+  const providingDetail = await isProvidingBugDetail(message.text ?? "", hasFiles);
+  if (!providingDetail) {
+    console.log(`  → Reply is conversation, not bug detail. Ignoring.`);
+    return;
+  }
+
+  const originalText = (await getPendingThread(threadTs))!;
+  const combinedText = `${originalText}\n\nFollow-up from reporter: ${message.text}`;
 
   const result = await classifyMessage(combinedText, hasFiles);
   console.log(`[${ts}] 🔍 Re-classification:`, JSON.stringify(result));
