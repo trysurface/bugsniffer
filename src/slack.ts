@@ -41,6 +41,24 @@ export function createSlackApp(): App {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Fetch recent non-bot replies in a thread, joined into a single string. */
+async function getRecentUserReplies(
+  client: any,
+  channel: string,
+  threadTs: string
+): Promise<string> {
+  const result = await client.conversations.replies({
+    channel,
+    ts: threadTs,
+    limit: 10,
+  });
+  const messages: any[] = result.messages ?? [];
+  return messages
+    .filter((m: any) => !m.bot_id && m.ts !== threadTs)
+    .map((m: any) => m.text ?? "")
+    .join("\n");
+}
+
 function shouldSkipMessage(message: SlackMessage): boolean {
   // Wrong channel
   if (message.channel !== config.slack.channelId) return true;
@@ -136,7 +154,9 @@ async function handleThreadFollowUp(
   // Handle dupe-dispute threads
   if (stored.startsWith("DUPE:")) {
     const originalText = stored.slice(5);
-    const disputing = await isDisputingDupe(message.text ?? "");
+    // Fetch recent non-bot replies for context (user might split across messages)
+    const recentReplies = await getRecentUserReplies(client, message.channel, threadTs);
+    const disputing = await isDisputingDupe(recentReplies);
     if (!disputing) {
       console.log(`  → Reply in dupe thread is not a dispute. Ignoring.`);
       return;
