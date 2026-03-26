@@ -121,18 +121,10 @@ function buildBugContentBlocks(text: string, files: SlackFile[]): any[] {
           type: "external",
         },
       });
-    } else if (isVideo && publicUrl) {
-      blocks.push({
-        video: {
-          external: { url: publicUrl },
-          type: "external",
-        },
-      });
-    } else if (publicUrl) {
-      // Other file types — link as bookmark
-      blocks.push({ bookmark: { url: file.permalink } });
     } else {
-      // No public URL — fall back to Slack permalink
+      // Videos and other files — Notion only supports video embeds from
+      // specific providers (Loom, YouTube, etc.), not raw file URLs.
+      // Use a bookmark with the Slack permalink so users can click through.
       blocks.push({ bookmark: { url: file.permalink } });
     }
   }
