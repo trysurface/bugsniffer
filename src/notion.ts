@@ -111,6 +111,43 @@ async function notionUserToSlackId(
   }
 }
 
+// ── Sprint lookup ───────────────────────────────────────────────────────────
+
+let currentSprintId: string | null = null;
+let sprintCacheExpiry = 0;
+const SPRINT_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Get the current sprint's page ID (cached for 10 minutes). */
+async function getCurrentSprintId(): Promise<string | null> {
+  if (currentSprintId && Date.now() < sprintCacheExpiry) {
+    return currentSprintId;
+  }
+
+  try {
+    const response = await notion.dataSources.query({
+      data_source_id: config.notion.engTaskTracker.sprintsDataSourceId,
+      filter: {
+        property: "Sprint status",
+        status: { equals: "Current" },
+      },
+    });
+
+    const sprint = response.results.filter(isFullPage)[0];
+    if (sprint) {
+      currentSprintId = sprint.id;
+      sprintCacheExpiry = Date.now() + SPRINT_CACHE_TTL_MS;
+      console.log(`[sync] Current sprint: ${sprint.id}`);
+      return currentSprintId;
+    }
+
+    console.warn("[sync] No sprint with status 'Current' found");
+    return null;
+  } catch (err) {
+    console.error("[sync] Failed to query current sprint:", err);
+    return null;
+  }
+}
+
 // ── Eng Task Tracker sync ───────────────────────────────────────────────────
 
 interface BugNeedingEngTask {
@@ -172,15 +209,22 @@ export async function getBugsNeedingEngTask(): Promise<BugNeedingEngTask[]> {
 export async function createEngTask(
   bug: BugNeedingEngTask
 ): Promise<{ id: string; url: string }> {
+  const sprintId = await getCurrentSprintId();
+
+  const properties: Record<string, any> = {
+    "Task name": { title: [{ text: { content: `🪲 ${bug.title}` } }] },
+    Status: { status: { name: "Not started" } },
+    Assignee: { people: bug.ownerIds.map((id) => ({ id })) },
+    "Ticket Type": { multi_select: [{ name: "Bug" }] },
+    "Bug Tracker": { relation: [{ id: bug.id }] },
+  };
+  if (sprintId) {
+    properties.Sprint = { relation: [{ id: sprintId }] };
+  }
+
   const page = await notion.pages.create({
     parent: { database_id: config.notion.engTaskTracker.databaseId },
-    properties: {
-      "Task name": { title: [{ text: { content: `🪲 ${bug.title}` } }] },
-      Status: { status: { name: "Not started" } },
-      Assignee: { people: bug.ownerIds.map((id) => ({ id })) },
-      "Ticket Type": { multi_select: [{ name: "Bug" }] },
-      "Bug Tracker": { relation: [{ id: bug.id }] },
-    },
+    properties,
   });
 
   if (!isFullPage(page)) throw new Error("Notion returned a partial page response");

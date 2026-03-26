@@ -17,6 +17,8 @@ export const config = {
         process.env.ENG_TASK_TRACKER_DATABASE_ID || "1b544c625b9f80d2a4c1d571160b1b67",
       dataSourceId:
         process.env.ENG_TASK_TRACKER_DATA_SOURCE_ID || "1b544c62-5b9f-809d-8948-000bc8be13ed",
+      sprintsDataSourceId:
+        process.env.SPRINTS_DATA_SOURCE_ID || "1c944c62-5b9f-8094-a554-000bb58a8f0c",
     },
   },
   anthropic: {
