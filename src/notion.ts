@@ -315,11 +315,9 @@ async function notifySlackOfEngTask(
     const assigneeText = slackMentions.length > 0
       ? slackMentions.join(", ")
       : "an engineer";
+    const reporterMention = reporterUserId ? `<@${reporterUserId}>` : "reporter";
 
-    let text = `:wrench: ${assigneeText} has been assigned to this bug → <${task.url}|Eng Task Tracker ticket>`;
-    if (reporterUserId) {
-      text += `\n<@${reporterUserId}> your bug report just got picked up!`;
-    }
+    const text = `${reporterMention} your bug just got assigned\n\n• *Assigned to:* ${assigneeText}\n• *Reported by:* ${reporterMention}\n• *Eng ticket:* <${task.url}|${bug.title}>`;
 
     await slackClient.chat.postMessage({
       channel: parsed.channel,
