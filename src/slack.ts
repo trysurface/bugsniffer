@@ -9,6 +9,17 @@ import {
   deletePendingThread,
 } from "./store.js";
 
+/** Slack file object (subset of fields we use). */
+export interface SlackFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  filetype: string;
+  url_private: string;
+  permalink: string;
+  permalink_public?: string;
+}
+
 /** Subset of the Slack message event fields we actually use. */
 interface SlackMessage {
   channel: string;
@@ -18,7 +29,7 @@ interface SlackMessage {
   subtype?: string;
   bot_id?: string;
   thread_ts?: string;
-  files?: unknown[];
+  files?: SlackFile[];
 }
 
 export function createSlackApp(): App {
@@ -85,13 +96,14 @@ function debounceMessage(
 /**
  * Fetch recent top-level messages from the same user within a short window
  * (to combine rapid-fire messages like "bug in lead scoring" + "for eragon").
+ * Returns combined text and any files from all messages.
  */
 async function getRecentUserMessages(
   client: any,
   channel: string,
   userId: string,
   latestTs: string
-): Promise<string | null> {
+): Promise<{ text: string; files: SlackFile[] } | null> {
   const result = await client.conversations.history({
     channel,
     latest: latestTs,
@@ -101,16 +113,20 @@ async function getRecentUserMessages(
   const messages: any[] = result.messages ?? [];
   // Collect consecutive messages from the same user (no thread, no bot)
   const cutoff = parseFloat(latestTs) - 30; // 30-second window
-  const userMessages = [];
+  const userMessages: { text: string; files: SlackFile[] }[] = [];
   for (const m of messages) {
     if (m.user !== userId) break;
     if (m.bot_id || m.thread_ts) break;
     if (parseFloat(m.ts) < cutoff) break;
-    userMessages.push(m.text ?? "");
+    userMessages.push({ text: m.text ?? "", files: m.files ?? [] });
   }
   if (userMessages.length <= 1) return null;
   // Messages come newest-first, reverse to chronological
-  return userMessages.reverse().join("\n");
+  userMessages.reverse();
+  return {
+    text: userMessages.map((m) => m.text).join("\n"),
+    files: userMessages.flatMap((m) => m.files),
+  };
 }
 
 /** Fetch recent non-bot replies in a thread, joined into a single string. */
@@ -129,6 +145,23 @@ async function getRecentUserReplies(
     .filter((m: any) => !m.bot_id && m.ts !== threadTs)
     .map((m: any) => m.text ?? "")
     .join("\n");
+}
+
+/** Collect all non-bot files from a thread (original message + replies). */
+async function getThreadFiles(
+  client: any,
+  channel: string,
+  threadTs: string
+): Promise<SlackFile[]> {
+  const result = await client.conversations.replies({
+    channel,
+    ts: threadTs,
+    limit: 20,
+  });
+  const messages: any[] = result.messages ?? [];
+  return messages
+    .filter((m: any) => !m.bot_id)
+    .flatMap((m: any) => m.files ?? []);
 }
 
 function shouldSkipMessage(message: SlackMessage): boolean {
@@ -196,9 +229,10 @@ async function processMessage(
   }
 
   // For top-level messages, fetch recent messages from the user to combine rapid-fire posts
-  const recentText = await getRecentUserMessages(client, message.channel, message.user!, message.ts!);
-  const text = recentText || message.text!;
-  const hasFiles = !!(message.files?.length);
+  const recent = await getRecentUserMessages(client, message.channel, message.user!, message.ts!);
+  const text = recent?.text || message.text!;
+  const files: SlackFile[] = recent?.files || message.files || [];
+  const hasFiles = files.length > 0;
   const ts = new Date().toISOString();
 
   console.log(
@@ -227,7 +261,7 @@ async function processMessage(
     return;
   }
 
-  await createTicketAndConfirm(result.suggested_title, text, message.ts!, say, client, undefined);
+  await createTicketAndConfirm(result.suggested_title, text, files, message.ts!, say, client, undefined);
 }
 
 async function handleThreadFollowUp(
@@ -236,7 +270,8 @@ async function handleThreadFollowUp(
   client: any
 ): Promise<void> {
   const threadTs = message.thread_ts!;
-  const hasFiles = !!(message.files?.length);
+  const threadFiles = await getThreadFiles(client, message.channel, threadTs);
+  const hasFiles = threadFiles.length > 0;
   const ts = new Date().toISOString();
   const stored = (await getPendingThread(threadTs))!;
 
@@ -259,7 +294,7 @@ async function handleThreadFollowUp(
     await deletePendingThread(threadTs);
     const classResult = await classifyMessage(originalText, hasFiles);
     const title = classResult.suggested_title || originalText.slice(0, 100);
-    await createTicketAndConfirm(title, originalText, threadTs, say, client, threadTs);
+    await createTicketAndConfirm(title, originalText, threadFiles, threadTs, say, client, threadTs);
     return;
   }
 
@@ -292,7 +327,7 @@ async function handleThreadFollowUp(
   }
 
   await deletePendingThread(threadTs);
-  await createTicketAndConfirm(result.suggested_title, combinedText, threadTs, say, client, threadTs);
+  await createTicketAndConfirm(result.suggested_title, combinedText, threadFiles, threadTs, say, client, threadTs);
 }
 
 /**
@@ -340,6 +375,7 @@ async function checkForDuplicate(
 async function createTicketAndConfirm(
   suggestedTitle: string | null,
   text: string,
+  files: SlackFile[],
   messageTs: string,
   say: Function,
   client: any,
@@ -351,7 +387,11 @@ async function createTicketAndConfirm(
   });
   const slackLink = permalinkResponse.permalink as string;
   const title = suggestedTitle || text.slice(0, 100);
-  const ticket = await createBugTicket(title, slackLink);
+
+  // Make Slack files public so they can be embedded in Notion
+  const publicFiles = await makeFilesPublic(client, files);
+
+  const ticket = await createBugTicket(title, slackLink, text, publicFiles);
 
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 
@@ -359,4 +399,27 @@ async function createTicketAndConfirm(
     text: `:bug: Added to <${config.notion.databaseUrl}|Bug Tracker>: *"${title}"* — Not started.`,
     thread_ts: threadTs ?? messageTs,
   });
+}
+
+/** Make Slack files publicly accessible for embedding in Notion. */
+async function makeFilesPublic(
+  client: any,
+  files: SlackFile[]
+): Promise<SlackFile[]> {
+  const results: SlackFile[] = [];
+  for (const file of files) {
+    try {
+      const resp = await client.files.sharedPublicURL({ file: file.id });
+      results.push({ ...file, permalink_public: resp.file?.permalink_public });
+    } catch (err: any) {
+      const code = err?.data?.error;
+      if (code === "already_public") {
+        results.push(file);
+      } else {
+        console.warn(`[slack] Could not make file ${file.id} public: ${code ?? err}`);
+        results.push(file); // Still include — we'll fall back to permalink
+      }
+    }
+  }
+  return results;
 }

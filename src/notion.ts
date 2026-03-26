@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
 import type { WebClient } from "@slack/web-api";
+import type { SlackFile } from "./slack.js";
 import { config } from "./config.js";
 
 const notion = new Client({ auth: config.notion.apiKey });
@@ -25,7 +26,9 @@ function isFullPage(page: { object: string }): page is PageObjectResponse {
 
 export async function createBugTicket(
   title: string,
-  slackThreadUrl: string
+  slackThreadUrl: string,
+  messageText: string,
+  files: SlackFile[]
 ): Promise<NotionTicket> {
   const page = await notion.pages.create({
     parent: { database_id: config.notion.databaseId },
@@ -37,7 +40,104 @@ export async function createBugTicket(
   });
 
   if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
+
+  // Build page content from the Slack message
+  const blocks = buildBugContentBlocks(messageText, files);
+  if (blocks.length > 0) {
+    await notion.blocks.children.append({
+      block_id: page.id,
+      children: blocks,
+    });
+  }
+
   return { id: page.id, url: page.url };
+}
+
+/** Extract embeddable video URLs (Loom, Jam, YouTube) from text. */
+function extractEmbedUrls(text: string): string[] {
+  const pattern = /https?:\/\/(?:www\.)?(?:loom\.com\/share\/[a-zA-Z0-9]+|jam\.dev\/c\/[a-zA-Z0-9-]+|youtu(?:be\.com\/watch\?v=|\.be\/)[a-zA-Z0-9_-]+)/g;
+  return [...text.matchAll(pattern)].map((m) => m[0]);
+}
+
+/** Clean Slack-formatted text for Notion (convert <url|label> to plain text). */
+function cleanSlackText(text: string): string {
+  return text
+    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, "$2 ($1)")  // <url|label> → label (url)
+    .replace(/<(https?:\/\/[^>]+)>/g, "$1")                   // <url> → url
+    .replace(/<@([A-Z0-9]+)>/g, "@user")                       // <@U123> → @user
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+/**
+ * Get a publicly accessible direct URL for a Slack file.
+ * Uses permalink_public + pub_secret to construct a direct URL.
+ */
+function getPublicFileUrl(file: SlackFile): string | null {
+  if (!file.permalink_public) return null;
+  // Extract the pub_secret from permalink_public
+  const match = file.permalink_public.match(/pub_secret=([a-f0-9]+)/);
+  if (!match) return null;
+  return `${file.url_private}?pub_secret=${match[1]}`;
+}
+
+/** Build Notion blocks from Slack message text and files. */
+function buildBugContentBlocks(text: string, files: SlackFile[]): any[] {
+  const blocks: any[] = [];
+  const embedUrls = extractEmbedUrls(text);
+
+  // Message text as paragraphs (max 2000 chars per block)
+  const cleaned = cleanSlackText(text);
+  const lines = cleaned.split("\n").filter((l) => l.trim());
+  for (const line of lines) {
+    const truncated = line.slice(0, 2000);
+    blocks.push({
+      paragraph: {
+        rich_text: [{ text: { content: truncated } }],
+      },
+    });
+  }
+
+  // Loom/Jam/YouTube embeds (watchable inline in Notion)
+  for (const url of embedUrls) {
+    if (url.includes("loom.com") || url.includes("youtu")) {
+      blocks.push({ video: { external: { url }, type: "external" } });
+    } else {
+      blocks.push({ embed: { url } });
+    }
+  }
+
+  // Slack file attachments
+  for (const file of files) {
+    const publicUrl = getPublicFileUrl(file);
+    const isImage = file.mimetype?.startsWith("image/");
+    const isVideo = file.mimetype?.startsWith("video/");
+
+    if (isImage && publicUrl) {
+      blocks.push({
+        image: {
+          external: { url: publicUrl },
+          type: "external",
+        },
+      });
+    } else if (isVideo && publicUrl) {
+      blocks.push({
+        video: {
+          external: { url: publicUrl },
+          type: "external",
+        },
+      });
+    } else if (publicUrl) {
+      // Other file types — link as bookmark
+      blocks.push({ bookmark: { url: file.permalink } });
+    } else {
+      // No public URL — fall back to Slack permalink
+      blocks.push({ bookmark: { url: file.permalink } });
+    }
+  }
+
+  return blocks;
 }
 
 /** Fetch all unresolved bugs (Status != "Done") from the Notion database. */
