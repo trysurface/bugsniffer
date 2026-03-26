@@ -12,6 +12,12 @@ export const config = {
       process.env.NOTION_DATA_SOURCE_ID || "32744c62-5b9f-8062-9558-000b7f139468",
     databaseUrl:
       "https://www.notion.so/withsurface/32744c625b9f804db76ee0aa3d82499d?v=32744c625b9f8033b00d000cec98e078",
+    engTaskTracker: {
+      databaseId:
+        process.env.ENG_TASK_TRACKER_DATABASE_ID || "1b544c625b9f80d2a4c1d571160b1b67",
+      dataSourceId:
+        process.env.ENG_TASK_TRACKER_DATA_SOURCE_ID || "1b544c62-5b9f-809d-8948-000bc8be13ed",
+    },
   },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY!,

@@ -36,11 +36,11 @@ Slack (Socket Mode) → Message handler → Claude classifier → Notion ticket 
 **Stack:** TypeScript, Node.js 20, Slack Bolt, Notion SDK, Anthropic SDK
 
 **Source layout:**
-- `src/index.ts` — entry point, starts health server + Slack app
+- `src/index.ts` — entry point, starts health server + Slack app + eng task sync polling
 - `src/config.ts` — env var loading and validation
 - `src/classifier.ts` — Claude-powered message classification
 - `src/slack.ts` — Slack Bolt app, message event handler, orchestration
-- `src/notion.ts` — Notion ticket creation
+- `src/notion.ts` — Notion ticket creation + Bug→Eng Task Tracker sync
 - `src/store.ts` — pending thread persistence (Redis or in-memory fallback)
 - `src/health.ts` — HTTP health check server (Railway needs a PORT listener)
 
@@ -58,34 +58,26 @@ The classifier prompt is in `src/classifier.ts` → `buildPrompt()`. If classifi
 ## Key IDs and constants
 
 - **Slack channel:** `#surface_product_feedback` → `C0880RJL3SL`
-- **Notion database:** Bug Tracker → `32744c625b9f804db76ee0aa3d82499d`
-- **Notion data source ID:** `32744c62-5b9f-8062-9558-000b7f139468`
-- **Notion DB URL:** `https://www.notion.so/withsurface/32744c625b9f804db76ee0aa3d82499d?v=32744c625b9f8033b00d000cec98e078`
+- **Bug Tracker DB:** `32744c625b9f804db76ee0aa3d82499d` / data source `32744c62-5b9f-8062-9558-000b7f139468`
+- **Eng Task Tracker DB:** `1b544c625b9f80d2a4c1d571160b1b67` / data source `1b544c62-5b9f-809d-8948-000bc8be13ed`
+- **Bug Tracker URL:** `https://www.notion.so/withsurface/32744c625b9f804db76ee0aa3d82499d?v=32744c625b9f8033b00d000cec98e078`
 
-### Notion database schema
+### Bug Tracker → Eng Task Tracker sync
 
-The Bug Tracker database has these properties:
-| Property | Type | Notes |
-|---|---|---|
-| Name | title | Bug title (required) |
-| Status | status | "Not started", "In progress", "Done" |
-| Owner | person | Assignee |
-| Slack Thread URL | url | Link back to the original Slack message |
-| Completed At | date | When bug was resolved |
-| created | created_time | Auto-set by Notion |
-
-When creating tickets, we set: Name, Status ("Not started"), and Slack Thread URL.
+Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with the Eng Task Tracker. Every 60s, we poll for bugs with an Owner but no Task Tracker Link. For each, we create an Eng Task Tracker ticket (🪲-prefixed title, same assignee, Ticket Type: Bug, page content with reported date + Slack link). Then we post a threaded reply in the original Slack thread (@-ing the assigned engineer and the reporter) with `reply_broadcast` so it shows in the channel. Notion→Slack user mapping uses email lookup (cached). See `syncBugsToEngTasks()` in `src/notion.ts`.
 
 ## Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write |
+| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write, users:read, users:read.email |
 | `SLACK_APP_TOKEN` | ✅ | App-level token (xapp-...) for Socket Mode. Scope: connections:write |
 | `NOTION_API_KEY` | ✅ | Internal integration token (ntn_...) |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key (sk-ant-...) |
 | `SLACK_CHANNEL_ID` | ❌ | Override channel (default: C0880RJL3SL) |
-| `NOTION_DATABASE_ID` | ❌ | Override database (default: 32744c625b9f804db76ee0aa3d82499d) |
+| `NOTION_DATABASE_ID` | ❌ | Override Bug Tracker database (default: 32744c625b9f804db76ee0aa3d82499d) |
+| `ENG_TASK_TRACKER_DATABASE_ID` | ❌ | Override Eng Task Tracker database (default: 1b544c625b9f80d2a4c1d571160b1b67) |
+| `ENG_TASK_TRACKER_DATA_SOURCE_ID` | ❌ | Override Eng Task Tracker data source (default: 1b544c62-5b9f-809d-8948-000bc8be13ed) |
 | `CLASSIFIER_MODEL` | ❌ | Override Claude model (default: claude-sonnet-4-20250514) |
 | `REDIS_URL` | ❌ | Redis connection URL for pending thread persistence (falls back to in-memory if unset) |
 | `PORT` | ❌ | Health check port (default: 3000) |
@@ -136,15 +128,15 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 - **Never use `as any` to silence type errors.** If the SDK types don't match, check the SDK version's actual API surface (e.g. Notion SDK v5 moved `databases.query` → `dataSources.query`). Casting hides runtime errors.
 - Slack Socket Mode requires the `SLACK_APP_TOKEN` (app-level token), separate from the bot token
 - The bot must be invited to the channel (`/invite @BotName`) or it won't receive messages
-- The Notion integration must be shared with the Bug Tracker database (database ⋯ → Connections → Add)
+- The Notion integration must be shared with both the Bug Tracker and Eng Task Tracker databases (database ⋯ → Connections → Add)
 - Always use `client.chat.getPermalink()` for Slack URLs — never construct them manually (workspace subdomain varies)
 
 ## Changelog
 
+- **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.
 - **2026-03-19** — Dupe dispute: users can reply "that's a different bug" to override duplicate classification.
 - **2026-03-19** — Thread follow-up filter: bot only responds to replies that provide bug detail.
 - **2026-03-19** — Duplicate detection: new bug reports matched against unresolved Notion tickets via Claude.
 - **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API.
 - **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
-- **2026-03-18** — Thread follow-up loop + Redis persistence for pending threads.

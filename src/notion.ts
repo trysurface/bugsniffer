@@ -1,8 +1,12 @@
 import { Client } from "@notionhq/client";
 import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
+import type { WebClient } from "@slack/web-api";
 import { config } from "./config.js";
 
 const notion = new Client({ auth: config.notion.apiKey });
+
+// Cache Notion user ID → Slack user ID mappings to avoid repeated lookups
+const notionToSlackCache = new Map<string, string | null>();
 
 export interface NotionTicket {
   id: string;
@@ -56,6 +60,232 @@ export async function getUnresolvedBugs(): Promise<ExistingBug[]> {
           : "(untitled)";
       return { id: page.id, title, url: page.url };
     });
+}
+
+// ── Slack helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Parse a Slack message URL into channel + thread_ts.
+ * URL format: https://<workspace>.slack.com/archives/<channel>/p<ts_without_dot>
+ */
+function parseSlackUrl(url: string): { channel: string; threadTs: string } | null {
+  const match = url.match(/\/archives\/([A-Z0-9]+)\/p(\d{10})(\d{6})/);
+  if (!match) return null;
+  return { channel: match[1], threadTs: `${match[2]}.${match[3]}` };
+}
+
+/** Map a Notion user ID to a Slack user ID via email lookup. */
+async function notionUserToSlackId(
+  notionUserId: string,
+  slackClient: WebClient
+): Promise<string | null> {
+  if (notionToSlackCache.has(notionUserId)) {
+    return notionToSlackCache.get(notionUserId)!;
+  }
+
+  try {
+    const notionUser = await notion.users.retrieve({ user_id: notionUserId });
+    const email =
+      notionUser.type === "person" ? notionUser.person.email : null;
+    if (!email) {
+      console.warn(`[sync] Notion user ${notionUserId} has no email — cannot map to Slack`);
+      notionToSlackCache.set(notionUserId, null);
+      return null;
+    }
+
+    const slackUser = await slackClient.users.lookupByEmail({ email });
+    const slackId = slackUser.user?.id ?? null;
+    notionToSlackCache.set(notionUserId, slackId);
+    return slackId;
+  } catch (err: any) {
+    // Don't cache scope/auth errors — they may be fixed by adding scopes later
+    const errorCode = err?.data?.error ?? err?.code;
+    if (errorCode === "missing_scope" || errorCode === "not_authed" || errorCode === "token_revoked") {
+      console.warn(`[sync] Slack scope error mapping user ${notionUserId}: ${errorCode}. Add users:read and users:read.email scopes.`);
+      return null;
+    }
+    // users_not_found means the email doesn't match anyone in Slack — safe to cache
+    console.warn(`[sync] Could not map Notion user ${notionUserId} to Slack: ${errorCode ?? err}`);
+    notionToSlackCache.set(notionUserId, null);
+    return null;
+  }
+}
+
+// ── Eng Task Tracker sync ───────────────────────────────────────────────────
+
+interface BugNeedingEngTask {
+  id: string;
+  title: string;
+  ownerIds: string[];
+  slackThreadUrl: string | null;
+  createdAt: string;
+}
+
+/**
+ * Find bug tickets that have an Owner assigned but no Task Tracker Link yet.
+ * These need a corresponding Eng Task Tracker ticket created.
+ */
+export async function getBugsNeedingEngTask(): Promise<BugNeedingEngTask[]> {
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.dataSourceId,
+    filter: {
+      and: [
+        { property: "Owner", people: { is_not_empty: true } },
+        { property: "Task Tracker Link", relation: { is_empty: true } },
+        { property: "Status", status: { does_not_equal: "Done" } },
+        { property: "Status", status: { does_not_equal: "Cancelled" } },
+      ],
+    },
+  });
+
+  return response.results.filter(isFullPage).map((page) => {
+    const nameProp = page.properties.Name;
+    const title =
+      nameProp.type === "title"
+        ? nameProp.title[0]?.plain_text ?? "(untitled)"
+        : "(untitled)";
+
+    const ownerProp = page.properties.Owner;
+    const ownerIds =
+      ownerProp.type === "people"
+        ? ownerProp.people.map((p) => p.id)
+        : [];
+
+    const slackProp = page.properties["Slack Thread URL"];
+    const slackThreadUrl =
+      slackProp.type === "url" ? slackProp.url : null;
+
+    const createdProp = page.properties.created;
+    const createdAt =
+      createdProp.type === "created_time"
+        ? createdProp.created_time.split("T")[0]
+        : new Date().toISOString().split("T")[0];
+
+    return { id: page.id, title, ownerIds, slackThreadUrl, createdAt };
+  });
+}
+
+/**
+ * Create an Eng Task Tracker ticket linked to a bug, with the same title and assignee.
+ * The two-way relation auto-populates "Task Tracker Link" on the bug side.
+ */
+export async function createEngTask(
+  bug: BugNeedingEngTask
+): Promise<{ id: string; url: string }> {
+  const page = await notion.pages.create({
+    parent: { database_id: config.notion.engTaskTracker.databaseId },
+    properties: {
+      "Task name": { title: [{ text: { content: `🪲 ${bug.title}` } }] },
+      Status: { status: { name: "Not started" } },
+      Assignee: { people: bug.ownerIds.map((id) => ({ id })) },
+      "Ticket Type": { multi_select: [{ name: "Bug" }] },
+      "Bug Tracker": { relation: [{ id: bug.id }] },
+    },
+  });
+
+  if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
+
+  // Add page content with bug details
+  const contentBlocks: any[] = [
+    {
+      paragraph: {
+        rich_text: [
+          { text: { content: "Reported: " }, annotations: { bold: true } },
+          { text: { content: bug.createdAt } },
+        ],
+      },
+    },
+  ];
+  if (bug.slackThreadUrl) {
+    contentBlocks.push({
+      paragraph: {
+        rich_text: [
+          { text: { content: "Slack thread: " }, annotations: { bold: true } },
+          { text: { content: bug.slackThreadUrl, link: { url: bug.slackThreadUrl } } },
+        ],
+      },
+    });
+  }
+  await notion.blocks.children.append({
+    block_id: page.id,
+    children: contentBlocks,
+  });
+
+  return { id: page.id, url: page.url };
+}
+
+/**
+ * Poll for bugs with an owner but no eng task, and create linked tasks.
+ * Posts a Slack notification in the original thread when a task is created.
+ */
+export async function syncBugsToEngTasks(slackClient: WebClient): Promise<void> {
+  try {
+    const bugs = await getBugsNeedingEngTask();
+    if (bugs.length === 0) return;
+
+    console.log(`[sync] Found ${bugs.length} bug(s) needing eng tasks`);
+
+    for (const bug of bugs) {
+      try {
+        const task = await createEngTask(bug);
+        console.log(
+          `[sync] Created eng task for "${bug.title}" → ${task.url}`
+        );
+        await notifySlackOfEngTask(slackClient, bug, task);
+      } catch (err) {
+        console.error(`[sync] Failed to create eng task for "${bug.title}" (${bug.id}):`, err);
+      }
+    }
+  } catch (err) {
+    console.error("[sync] Failed to query bugs needing eng tasks:", err);
+  }
+}
+
+/** Notify the original Slack thread that an eng task was created. */
+async function notifySlackOfEngTask(
+  slackClient: WebClient,
+  bug: BugNeedingEngTask,
+  task: { id: string; url: string }
+): Promise<void> {
+  if (!bug.slackThreadUrl) return;
+
+  const parsed = parseSlackUrl(bug.slackThreadUrl);
+  if (!parsed) return;
+
+  try {
+    // Resolve assignee Slack IDs
+    const slackMentions: string[] = [];
+    for (const notionId of bug.ownerIds) {
+      const slackId = await notionUserToSlackId(notionId, slackClient);
+      if (slackId) slackMentions.push(`<@${slackId}>`);
+    }
+
+    // Get the original reporter from the thread
+    const threadResult = await slackClient.conversations.replies({
+      channel: parsed.channel,
+      ts: parsed.threadTs,
+      limit: 1,
+    });
+    const reporterUserId = (threadResult.messages?.[0] as any)?.user;
+
+    const assigneeText = slackMentions.length > 0
+      ? slackMentions.join(", ")
+      : "an engineer";
+
+    let text = `:wrench: ${assigneeText} has been assigned to this bug → <${task.url}|Eng Task Tracker ticket>`;
+    if (reporterUserId) {
+      text += `\n<@${reporterUserId}> your bug report just got picked up!`;
+    }
+
+    await slackClient.chat.postMessage({
+      channel: parsed.channel,
+      thread_ts: parsed.threadTs,
+      reply_broadcast: true,
+      text,
+    });
+  } catch (err) {
+    console.error(`[sync] Failed to send Slack notification for "${bug.title}":`, err);
+  }
 }
 
 /** Append a "Also reported in: <slackUrl>" line to an existing ticket's body. */
