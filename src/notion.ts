@@ -385,7 +385,11 @@ export async function syncBugsToEngTasks(slackClient: WebClient): Promise<void> 
 
     for (const bug of batch) {
       try {
-        // Dedup: verify no eng task already exists (guards against stale relation data)
+        // Guard: Notion filters can return stale results — validate in code
+        if (bug.ownerIds.length === 0) {
+          console.log(`[sync] Bug "${bug.title}" (${bug.id}) has no owner — skipping`);
+          continue;
+        }
         if (await engTaskExistsForBug(bug.id)) {
           console.log(`[sync] Eng task already exists for "${bug.title}" (${bug.id}) — skipping`);
           continue;
