@@ -64,7 +64,7 @@ The classifier prompt is in `src/classifier.ts` → `buildPrompt()`. If classifi
 
 ### Bug Tracker → Eng Task Tracker sync
 
-Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with the Eng Task Tracker. Every 60s, we poll for bugs with an Owner but no Task Tracker Link. For each, we create an Eng Task Tracker ticket (🪲-prefixed title, same assignee, Ticket Type: Bug, page content with reported date + Slack link). Then we post a threaded reply in the original Slack thread (@-ing the assigned engineer and the reporter) with `reply_broadcast` so it shows in the channel. Notion→Slack user mapping uses email lookup (cached). See `syncBugsToEngTasks()` in `src/notion.ts`.
+Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with the Eng Task Tracker. Every 60s, we poll for bugs with an Owner but no Task Tracker Link. For each, we verify no eng task already exists (dedup check against Eng Task Tracker), then create one (🪲-prefixed title, same assignee, Ticket Type: Bug, page content with reported date + Slack link). Sync is capped at 5 bugs per cycle to limit blast radius. We post a threaded reply in the original Slack thread (@-ing the assigned engineer and the reporter). Every 12 hours, a digest of all assignments since the last report is posted to the main channel. Notion→Slack user mapping uses email lookup (cached). See `syncBugsToEngTasks()` and `postAssignmentDigest()` in `src/notion.ts`.
 
 ## Environment variables
 
@@ -133,6 +133,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
 - **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.
 - **2026-03-19** — Dupe dispute: users can reply "that's a different bug" to override duplicate classification.

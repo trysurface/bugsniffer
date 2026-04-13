@@ -242,6 +242,11 @@ async function getCurrentSprintId(): Promise<string | null> {
 
 // ── Eng Task Tracker sync ───────────────────────────────────────────────────
 
+const MAX_SYNC_BATCH = 5;
+
+// Buffer of assignments made since the last digest was posted
+const assignmentBuffer: { bugTitle: string; taskUrl: string; ownerIds: string[] }[] = [];
+
 interface BugNeedingEngTask {
   id: string;
   title: string;
@@ -350,6 +355,18 @@ export async function createEngTask(
   return { id: page.id, url: page.url };
 }
 
+/** Check if an eng task already exists in the tracker for a given bug. */
+async function engTaskExistsForBug(bugId: string): Promise<boolean> {
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.engTaskTracker.dataSourceId,
+    filter: {
+      property: "Bug Tracker",
+      relation: { contains: bugId },
+    },
+  });
+  return response.results.length > 0;
+}
+
 /**
  * Poll for bugs with an owner but no eng task, and create linked tasks.
  * Posts a Slack notification in the original thread when a task is created.
@@ -361,13 +378,24 @@ export async function syncBugsToEngTasks(slackClient: WebClient): Promise<void> 
 
     console.log(`[sync] Found ${bugs.length} bug(s) needing eng tasks`);
 
-    for (const bug of bugs) {
+    const batch = bugs.slice(0, MAX_SYNC_BATCH);
+    if (bugs.length > MAX_SYNC_BATCH) {
+      console.log(`[sync] Capping to ${MAX_SYNC_BATCH} of ${bugs.length} (rest will sync next cycle)`);
+    }
+
+    for (const bug of batch) {
       try {
+        // Dedup: verify no eng task already exists (guards against stale relation data)
+        if (await engTaskExistsForBug(bug.id)) {
+          console.log(`[sync] Eng task already exists for "${bug.title}" (${bug.id}) — skipping`);
+          continue;
+        }
         const task = await createEngTask(bug);
+        assignmentBuffer.push({ bugTitle: bug.title, taskUrl: task.url, ownerIds: bug.ownerIds });
         console.log(
           `[sync] Created eng task for "${bug.title}" → ${task.url}`
         );
-        await notifySlackOfEngTask(slackClient, bug, task);
+        await replyInThreadWithEngTask(slackClient, bug, task);
       } catch (err) {
         console.error(`[sync] Failed to create eng task for "${bug.title}" (${bug.id}):`, err);
       }
@@ -378,7 +406,7 @@ export async function syncBugsToEngTasks(slackClient: WebClient): Promise<void> 
 }
 
 /** Notify the original Slack thread that an eng task was created. */
-async function notifySlackOfEngTask(
+async function replyInThreadWithEngTask(
   slackClient: WebClient,
   bug: BugNeedingEngTask,
   task: { id: string; url: string }
@@ -414,12 +442,94 @@ async function notifySlackOfEngTask(
     await slackClient.chat.postMessage({
       channel: parsed.channel,
       thread_ts: parsed.threadTs,
-      reply_broadcast: true,
       text,
     });
   } catch (err) {
     console.error(`[sync] Failed to send Slack notification for "${bug.title}":`, err);
   }
+}
+
+/** Fetch bugs created in the Bug Tracker since the given cutoff. */
+async function getNewBugsSince(cutoff: string): Promise<{ title: string; url: string }[]> {
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.dataSourceId,
+    filter: {
+      property: "created",
+      created_time: { on_or_after: cutoff },
+    },
+  });
+  return response.results.filter(isFullPage).map((page) => {
+    const nameProp = page.properties.Name;
+    const title = nameProp.type === "title" ? nameProp.title[0]?.plain_text ?? "(untitled)" : "(untitled)";
+    return { title, url: page.url };
+  });
+}
+
+/** Fetch bug-type eng tasks completed since the given cutoff. */
+async function getCompletedBugsSince(cutoff: string): Promise<{ title: string; url: string }[]> {
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.engTaskTracker.dataSourceId,
+    filter: {
+      and: [
+        { property: "Ticket Type", multi_select: { contains: "Bug" } },
+        { property: "Status", status: { equals: "Done" } },
+        { property: "Completed At", date: { on_or_after: cutoff } },
+      ],
+    },
+  });
+  return response.results.filter(isFullPage).map((page) => {
+    const nameProp = page.properties["Task name"];
+    const title = nameProp.type === "title" ? nameProp.title[0]?.plain_text ?? "(untitled)" : "(untitled)";
+    return { title, url: page.url };
+  });
+}
+
+/** Post a 12-hour digest of new bugs, assignments, and completions to the main channel. */
+export async function postAssignmentDigest(slackClient: WebClient): Promise<void> {
+  const cutoff = new Date(Date.now() - 12 * 60 * 60_000).toISOString();
+
+  const [assignments, newBugs, completedBugs] = await Promise.all([
+    Promise.resolve(assignmentBuffer.splice(0)),
+    getNewBugsSince(cutoff),
+    getCompletedBugsSince(cutoff),
+  ]);
+
+  if (assignments.length === 0 && newBugs.length === 0 && completedBugs.length === 0) return;
+
+  const sections: string[] = [];
+
+  if (newBugs.length > 0) {
+    const lines = newBugs.map((b) => `• <${b.url}|${b.title}>`);
+    sections.push(`*Reported (${newBugs.length})*\n${lines.join("\n")}`);
+  }
+
+  if (assignments.length > 0) {
+    const lines: string[] = [];
+    for (const item of assignments) {
+      const mentions: string[] = [];
+      for (const notionId of item.ownerIds) {
+        const slackId = await notionUserToSlackId(notionId, slackClient);
+        if (slackId) mentions.push(`<@${slackId}>`);
+      }
+      const assignee = mentions.length > 0 ? mentions.join(", ") : "unlinked engineer";
+      lines.push(`• <${item.taskUrl}|${item.bugTitle}> → ${assignee}`);
+    }
+    sections.push(`*Assigned (${assignments.length})*\n${lines.join("\n")}`);
+  }
+
+  if (completedBugs.length > 0) {
+    const lines = completedBugs.map((b) => `• <${b.url}|${b.title}>`);
+    sections.push(`*Completed (${completedBugs.length})*\n${lines.join("\n")}`);
+  }
+
+  const text = `*🪲 Bug Report — last 12 hours*\n\n${sections.join("\n\n")}`;
+
+  await slackClient.chat.postMessage({
+    channel: config.slack.channelId,
+    text,
+  });
+
+  console.log(`[digest] Posted digest to channel: ${newBugs.length} new, ${assignments.length} assigned, ${completedBugs.length} completed`);
 }
 
 /** Append a "Also reported in: <slackUrl>" line to an existing ticket's body. */

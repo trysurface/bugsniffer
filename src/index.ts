@@ -1,9 +1,10 @@
 import { validateConfig, config } from "./config.js";
 import { createSlackApp } from "./slack.js";
 import { startHealthServer } from "./health.js";
-import { syncBugsToEngTasks } from "./notion.js";
+import { syncBugsToEngTasks, postAssignmentDigest } from "./notion.js";
 
 const ENG_TASK_SYNC_INTERVAL_MS = 60_000; // 1 minute
+const DIGEST_INTERVAL_MS = 12 * 60 * 60_000; // 12 hours
 
 async function main(): Promise<void> {
   validateConfig();
@@ -16,8 +17,10 @@ async function main(): Promise<void> {
   // Start polling for bugs that need eng task tracker tickets
   const slackClient = app.client;
   setInterval(() => syncBugsToEngTasks(slackClient), ENG_TASK_SYNC_INTERVAL_MS);
-  // Run once immediately on startup
   syncBugsToEngTasks(slackClient);
+
+  // Post assignment digest to channel every 12 hours
+  setInterval(() => postAssignmentDigest(slackClient), DIGEST_INTERVAL_MS);
 
   console.log("⚡ bugsniffer is live!");
   console.log(`   Watching: #surface_product_feedback (${config.slack.channelId})`);
