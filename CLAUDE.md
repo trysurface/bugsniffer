@@ -134,7 +134,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
-- **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block (5-series models can lead with a thinking block).
+- **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block and strip ```json markdown fences (sonnet-5 fences inconsistently, which broke JSON.parse). Ticket-created Slack reply now links the created bug page instead of the DB "Everything" view.
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
 - **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.

@@ -396,7 +396,7 @@ async function createTicketAndConfirm(
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 
   await say({
-    text: `:bug: Added to <${config.notion.databaseUrl}|Bug Tracker>: *"${title}"* — Not started.`,
+    text: `:bug: Added to Bug Tracker: <${ticket.url}|${title}>`,
     thread_ts: threadTs ?? messageTs,
   });
 }
