@@ -34,7 +34,6 @@ export async function createBugTicket(
     parent: { database_id: config.notion.databaseId },
     properties: {
       Name: { title: [{ text: { content: title } }] },
-      Status: { status: { name: "Not started" } },
       "Slack Thread URL": { url: slackThreadUrl },
     },
   });
@@ -132,13 +131,20 @@ function buildBugContentBlocks(text: string, files: SlackFile[]): any[] {
   return blocks;
 }
 
-/** Fetch all unresolved bugs (Status != "Done") from the Notion database. */
-export async function getUnresolvedBugs(): Promise<ExistingBug[]> {
+const DEDUP_WINDOW_DAYS = 90;
+
+/**
+ * Fetch recently-reported bugs for duplicate detection. The Bug Tracker has no
+ * Status property (status is derived from the linked Eng Task), so we scope by
+ * recency instead — matching against bugs filed in the last DEDUP_WINDOW_DAYS.
+ */
+export async function getRecentBugs(): Promise<ExistingBug[]> {
+  const cutoff = new Date(Date.now() - DEDUP_WINDOW_DAYS * 24 * 60 * 60_000).toISOString();
   const response = await notion.dataSources.query({
     data_source_id: config.notion.dataSourceId,
     filter: {
-      property: "Status",
-      status: { does_not_equal: "Done" },
+      property: "created",
+      created_time: { on_or_after: cutoff },
     },
   });
 
@@ -266,8 +272,6 @@ export async function getBugsNeedingEngTask(): Promise<BugNeedingEngTask[]> {
       and: [
         { property: "Owner", people: { is_not_empty: true } },
         { property: "Task Tracker Link", relation: { is_empty: true } },
-        { property: "Status", status: { does_not_equal: "Done" } },
-        { property: "Status", status: { does_not_equal: "Cancelled" } },
       ],
     },
   });

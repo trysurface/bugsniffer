@@ -1,7 +1,7 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
 import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
-import { createBugTicket, getUnresolvedBugs, appendSlackLink } from "./notion.js";
+import { createBugTicket, getRecentBugs, appendSlackLink } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -342,7 +342,7 @@ async function checkForDuplicate(
   client: any,
   threadTs?: string
 ): Promise<boolean> {
-  const existingBugs = await getUnresolvedBugs();
+  const existingBugs = await getRecentBugs();
   const dupResult = await findDuplicate(text, existingBugs);
 
   if (!dupResult.is_duplicate || !dupResult.matching_bug_id) return false;

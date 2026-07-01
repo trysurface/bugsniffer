@@ -61,6 +61,7 @@ The classifier prompt is in `src/classifier.ts` → `buildPrompt()`. If classifi
 - **Bug Tracker DB:** `32744c625b9f804db76ee0aa3d82499d` / data source `32744c62-5b9f-8062-9558-000b7f139468`
 - **Eng Task Tracker DB:** `1b544c625b9f80d2a4c1d571160b1b67` / data source `1b544c62-5b9f-809d-8948-000bc8be13ed`
 - **Bug Tracker URL:** `https://www.notion.so/withsurface/32744c625b9f804db76ee0aa3d82499d?v=32744c625b9f8033b00d000cec98e078`
+- **Bug Tracker schema:** `Name` (title), `Owner` (person), `Slack Thread URL` (url), `Task Tracker Link` (relation), `created` (created_time). ⚠️ **No `Status` property** — bug status is derived from the linked Eng Task's status (`Eng Sprint Status (Linked)` rollup). Do not add `Status` filters/props to Bug Tracker queries. (The Eng Task Tracker *does* have `Status`.)
 
 ### Bug Tracker → Eng Task Tracker sync
 
@@ -78,7 +79,7 @@ Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with 
 | `NOTION_DATABASE_ID` | ❌ | Override Bug Tracker database (default: 32744c625b9f804db76ee0aa3d82499d) |
 | `ENG_TASK_TRACKER_DATABASE_ID` | ❌ | Override Eng Task Tracker database (default: 1b544c625b9f80d2a4c1d571160b1b67) |
 | `ENG_TASK_TRACKER_DATA_SOURCE_ID` | ❌ | Override Eng Task Tracker data source (default: 1b544c62-5b9f-809d-8948-000bc8be13ed) |
-| `CLASSIFIER_MODEL` | ❌ | Override Claude model (default: claude-sonnet-4-20250514) |
+| `CLASSIFIER_MODEL` | ❌ | Override Claude model (default: claude-sonnet-5). ⚠️ Model IDs get retired — a retired ID makes every classification 404 and the bot goes silently dead. Verify against the current model list if changing. |
 | `REDIS_URL` | ❌ | Redis connection URL for pending thread persistence (falls back to in-memory if unset) |
 | `PORT` | ❌ | Health check port (default: 3000) |
 
@@ -106,7 +107,7 @@ Railway env vars are set in the Railway dashboard (not committed).
 See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Key points:
 
 - All responses debounced (3s); rapid-fire messages from same user combined (30s window)
-- Bug reports checked for duplicates against unresolved Notion tickets (via Claude)
+- Bug reports checked for duplicates against recently-reported Notion tickets (last 90 days, via Claude) — see `getRecentBugs()`
 - Duplicates link to existing ticket; reporter can dispute to force a new ticket
 - Thread follow-ups only processed if providing bug detail; conversation is ignored
 - Pending store: Redis (30-day TTL, in-memory fallback). `DUPE:` prefix for dupe-dispute vs needs-detail threads
@@ -133,6 +134,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block (5-series models can lead with a thinking block).
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
 - **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.

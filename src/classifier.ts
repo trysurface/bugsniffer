@@ -3,6 +3,17 @@ import { config } from "./config.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
+/**
+ * Extract the text response from a Claude message by scanning for the first
+ * text block, rather than assuming content[0]. Thinking-capable models (e.g.
+ * the 5-series) may emit a thinking block first; assuming content[0] would
+ * yield "" and silently break JSON parsing.
+ */
+function extractText(response: Anthropic.Message): string {
+  const block = response.content.find((b) => b.type === "text");
+  return block?.type === "text" ? block.text.trim() : "";
+}
+
 export interface ClassificationResult {
   is_bug: boolean;
   has_sufficient_detail: boolean;
@@ -69,8 +80,7 @@ export async function classifyMessage(
       ],
     });
 
-    const raw =
-      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const raw = extractText(response);
     return JSON.parse(raw) as ClassificationResult;
   } catch (err) {
     console.error("[classifier] Failed to classify message:", err);
@@ -113,8 +123,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
       messages: [{ role: "user", content: prompt }],
     });
 
-    const raw =
-      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const raw = extractText(response);
     const result = JSON.parse(raw);
     return result.is_providing_detail === true;
   } catch (err) {
@@ -151,8 +160,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
       messages: [{ role: "user", content: prompt }],
     });
 
-    const raw =
-      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const raw = extractText(response);
     return JSON.parse(raw).is_disputing === true;
   } catch (err) {
     console.error("[classifier] Failed to check dupe dispute:", err);
@@ -212,8 +220,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
       messages: [{ role: "user", content: prompt }],
     });
 
-    const raw =
-      response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const raw = extractText(response);
     return JSON.parse(raw) as DuplicateResult;
   } catch (err) {
     console.error("[classifier] Failed to check for duplicates:", err);

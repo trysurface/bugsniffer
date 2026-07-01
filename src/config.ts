@@ -23,7 +23,7 @@ export const config = {
   },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: process.env.CLASSIFIER_MODEL || "claude-sonnet-4-20250514",
+    model: process.env.CLASSIFIER_MODEL || "claude-sonnet-5",
   },
   port: parseInt(process.env.PORT || "3000", 10),
 } as const;
