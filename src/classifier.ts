@@ -11,7 +11,12 @@ const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
  */
 function extractText(response: Anthropic.Message): string {
   const block = response.content.find((b) => b.type === "text");
-  return block?.type === "text" ? block.text.trim() : "";
+  let text = block?.type === "text" ? block.text.trim() : "";
+  // Some models wrap JSON in a ```json … ``` markdown fence despite being told
+  // not to; strip it so JSON.parse doesn't choke on the backticks.
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) text = fenced[1].trim();
+  return text;
 }
 
 export interface ClassificationResult {
