@@ -1,7 +1,7 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
 import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
-import { createBugTicket, getRecentBugs, appendSlackLink } from "./notion.js";
+import { createBugTicket, getRecentBugs, appendSlackLink, slackUserToNotionId } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -164,6 +164,20 @@ async function getThreadFiles(
     .flatMap((m: any) => m.files ?? []);
 }
 
+/** Get the Slack user ID of the thread's root (original) message author. */
+async function getThreadRootAuthor(
+  client: any,
+  channel: string,
+  threadTs: string
+): Promise<string | undefined> {
+  const result = await client.conversations.replies({
+    channel,
+    ts: threadTs,
+    limit: 1,
+  });
+  return (result.messages?.[0] as any)?.user;
+}
+
 function shouldSkipMessage(message: SlackMessage): boolean {
   // Wrong channel
   if (message.channel !== config.slack.channelId) return true;
@@ -261,7 +275,7 @@ async function processMessage(
     return;
   }
 
-  await createTicketAndConfirm(result.suggested_title, text, files, message.ts!, say, client, undefined);
+  await createTicketAndConfirm(result.suggested_title, text, files, message.ts!, say, client, undefined, message.user);
 }
 
 async function handleThreadFollowUp(
@@ -274,6 +288,8 @@ async function handleThreadFollowUp(
   const hasFiles = threadFiles.length > 0;
   const ts = new Date().toISOString();
   const stored = (await getPendingThread(threadTs))!;
+  // Reporter is whoever started the thread, not the follow-up replier
+  const reporterSlackId = await getThreadRootAuthor(client, message.channel, threadTs);
 
   console.log(
     `[${ts}] 🧵 Follow-up in pending thread ${threadTs} from ${message.user}`
@@ -294,7 +310,7 @@ async function handleThreadFollowUp(
     await deletePendingThread(threadTs);
     const classResult = await classifyMessage(originalText, hasFiles);
     const title = classResult.suggested_title || originalText.slice(0, 100);
-    await createTicketAndConfirm(title, originalText, threadFiles, threadTs, say, client, threadTs);
+    await createTicketAndConfirm(title, originalText, threadFiles, threadTs, say, client, threadTs, reporterSlackId);
     return;
   }
 
@@ -327,7 +343,7 @@ async function handleThreadFollowUp(
   }
 
   await deletePendingThread(threadTs);
-  await createTicketAndConfirm(result.suggested_title, combinedText, threadFiles, threadTs, say, client, threadTs);
+  await createTicketAndConfirm(result.suggested_title, combinedText, threadFiles, threadTs, say, client, threadTs, reporterSlackId);
 }
 
 /**
@@ -379,7 +395,8 @@ async function createTicketAndConfirm(
   messageTs: string,
   say: Function,
   client: any,
-  threadTs?: string
+  threadTs?: string,
+  reporterSlackId?: string
 ): Promise<void> {
   const permalinkResponse = await client.chat.getPermalink({
     channel: config.slack.channelId,
@@ -391,7 +408,12 @@ async function createTicketAndConfirm(
   // Make Slack files public so they can be embedded in Notion
   const publicFiles = await makeFilesPublic(client, files);
 
-  const ticket = await createBugTicket(title, slackLink, text, publicFiles);
+  // Resolve the reporter (Slack sender) to a Notion member for the Reporter field
+  const reporterNotionId = reporterSlackId
+    ? await slackUserToNotionId(reporterSlackId, client)
+    : null;
+
+  const ticket = await createBugTicket(title, slackLink, text, publicFiles, reporterNotionId);
 
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 

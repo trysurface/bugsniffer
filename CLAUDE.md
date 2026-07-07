@@ -61,7 +61,7 @@ The classifier prompt is in `src/classifier.ts` → `buildPrompt()`. If classifi
 - **Bug Tracker DB:** `32744c625b9f804db76ee0aa3d82499d` / data source `32744c62-5b9f-8062-9558-000b7f139468`
 - **Eng Task Tracker DB:** `1b544c625b9f80d2a4c1d571160b1b67` / data source `1b544c62-5b9f-809d-8948-000bc8be13ed`
 - **Bug Tracker URL:** `https://www.notion.so/withsurface/32744c625b9f804db76ee0aa3d82499d?v=32744c625b9f8033b00d000cec98e078`
-- **Bug Tracker schema:** `Name` (title), `Owner` (person), `Slack Thread URL` (url), `Task Tracker Link` (relation), `created` (created_time). ⚠️ **No `Status` property** — bug status is derived from the linked Eng Task's status (`Eng Sprint Status (Linked)` rollup). Do not add `Status` filters/props to Bug Tracker queries. (The Eng Task Tracker *does* have `Status`.)
+- **Bug Tracker schema:** `Name` (title), `Owner` (person), `Reporter` (person — the Slack message author, mapped by email), `Slack Thread URL` (url), `Task Tracker Link` (relation), `created` (created_time). ⚠️ **No `Status` property** — bug status is derived from the linked Eng Task's status (`Eng Sprint Status (Linked)` rollup). Do not add `Status` filters/props to Bug Tracker queries. (The Eng Task Tracker *does* have `Status`.)
 
 ### Bug Tracker → Eng Task Tracker sync
 
@@ -134,6 +134,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-07** — Added `Reporter` (person) to Bug Tracker, auto-set to the Slack message author. `slackUserToNotionId()` in `src/notion.ts` maps Slack sender → Notion member by email (reverse of `notionUserToSlackId`, cached via workspace member list). For thread follow-ups the reporter is the thread's root author, not the replier.
 - **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block and strip ```json markdown fences (sonnet-5 fences inconsistently, which broke JSON.parse). Ticket-created Slack reply now links the created bug page instead of the DB "Everything" view.
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
 - **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.

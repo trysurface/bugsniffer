@@ -8,6 +8,8 @@ const notion = new Client({ auth: config.notion.apiKey });
 
 // Cache Notion user ID → Slack user ID mappings to avoid repeated lookups
 const notionToSlackCache = new Map<string, string | null>();
+// Cache Slack user ID → Notion user ID mappings (reverse direction, for Reporter)
+const slackToNotionCache = new Map<string, string | null>();
 
 export interface NotionTicket {
   id: string;
@@ -28,14 +30,20 @@ export async function createBugTicket(
   title: string,
   slackThreadUrl: string,
   messageText: string,
-  files: SlackFile[]
+  files: SlackFile[],
+  reporterNotionId?: string | null
 ): Promise<NotionTicket> {
+  const properties: Record<string, any> = {
+    Name: { title: [{ text: { content: title } }] },
+    "Slack Thread URL": { url: slackThreadUrl },
+  };
+  if (reporterNotionId) {
+    properties.Reporter = { people: [{ id: reporterNotionId }] };
+  }
+
   const page = await notion.pages.create({
     parent: { database_id: config.notion.databaseId },
-    properties: {
-      Name: { title: [{ text: { content: title } }] },
-      "Slack Thread URL": { url: slackThreadUrl },
-    },
+    properties,
   });
 
   if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
@@ -205,6 +213,73 @@ async function notionUserToSlackId(
     // users_not_found means the email doesn't match anyone in Slack — safe to cache
     console.warn(`[sync] Could not map Notion user ${notionUserId} to Slack: ${errorCode ?? err}`);
     notionToSlackCache.set(notionUserId, null);
+    return null;
+  }
+}
+
+/**
+ * Lazily-built map of lowercased email → Notion user ID, from the workspace
+ * member list. Cached for the process lifetime (membership changes rarely).
+ */
+let notionEmailMap: Map<string, string> | null = null;
+
+async function getNotionEmailMap(): Promise<Map<string, string>> {
+  if (notionEmailMap) return notionEmailMap;
+
+  const map = new Map<string, string>();
+  let cursor: string | undefined;
+  do {
+    const resp = await notion.users.list({ start_cursor: cursor, page_size: 100 });
+    for (const u of resp.results) {
+      if (u.type === "person" && u.person.email) {
+        map.set(u.person.email.toLowerCase(), u.id);
+      }
+    }
+    cursor = resp.has_more ? resp.next_cursor ?? undefined : undefined;
+  } while (cursor);
+
+  notionEmailMap = map;
+  return map;
+}
+
+/**
+ * Map a Slack user ID to a Notion user ID via email lookup (reverse of
+ * notionUserToSlackId). Used to set the bug's Reporter to whoever posted
+ * the Slack message. Returns null if the reporter isn't a Notion member.
+ */
+export async function slackUserToNotionId(
+  slackUserId: string,
+  slackClient: WebClient
+): Promise<string | null> {
+  if (slackToNotionCache.has(slackUserId)) {
+    return slackToNotionCache.get(slackUserId)!;
+  }
+
+  try {
+    const info = await slackClient.users.info({ user: slackUserId });
+    const email = info.user?.profile?.email ?? null;
+    if (!email) {
+      console.warn(`[reporter] Slack user ${slackUserId} has no email — cannot map to Notion`);
+      slackToNotionCache.set(slackUserId, null);
+      return null;
+    }
+
+    const map = await getNotionEmailMap();
+    const notionId = map.get(email.toLowerCase()) ?? null;
+    if (!notionId) {
+      console.warn(`[reporter] No Notion member matches Slack email ${email}`);
+    }
+    slackToNotionCache.set(slackUserId, notionId);
+    return notionId;
+  } catch (err: any) {
+    // Don't cache scope/auth errors — they may be fixed by adding scopes later
+    const errorCode = err?.data?.error ?? err?.code;
+    if (errorCode === "missing_scope" || errorCode === "not_authed" || errorCode === "token_revoked") {
+      console.warn(`[reporter] Slack scope error looking up user ${slackUserId}: ${errorCode}. Add users:read and users:read.email scopes.`);
+      return null;
+    }
+    console.warn(`[reporter] Could not map Slack user ${slackUserId} to Notion: ${errorCode ?? err}`);
+    slackToNotionCache.set(slackUserId, null);
     return null;
   }
 }
