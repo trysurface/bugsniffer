@@ -14,8 +14,8 @@ All responses are debounced by 3 seconds (`DEBOUNCE_MS` in `src/slack.ts`). This
 1. **Skip check** — bot messages, system subtypes, empty text, wrong channel are all filtered out (`shouldSkipMessage()`).
 2. **Classification** — Claude determines: is it a bug? Does it have enough detail?
 3. **Not a bug** → silently ignored (feature requests, design feedback, chit-chat).
-4. **Bug → duplicate check** — queries all unresolved Notion tickets, asks Claude if this matches an existing one.
-   - **Duplicate found** → appends new Slack URL to existing ticket body, replies in-thread telling the reporter. Thread is tracked for dispute (stored with `DUPE:` prefix).
+4. **Bug → duplicate check** — queries all non-Done Notion tickets (`getOpenBugsForDedup`; Done bugs excluded so re-emerged bugs can re-file), asks Claude if this matches an existing one.
+   - **Duplicate found** → appends new Slack URL to existing ticket body, replies in-thread. Reply branches on ownership: in-progress tickets (have an Owner) say "already being worked on by X"; unassigned tickets get the standard reply. Thread is tracked for dispute (stored with `DUPE:` prefix).
    - **Not a duplicate** → continues to step 5.
 5. **Insufficient detail** → bot replies in-thread asking for more info. Thread is stored in pending store with the original text.
 6. **Sufficient detail** → creates Notion ticket, replies in-thread with confirmation and link.

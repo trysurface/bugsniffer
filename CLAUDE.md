@@ -107,7 +107,7 @@ Railway env vars are set in the Railway dashboard (not committed).
 See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Key points:
 
 - All responses debounced (3s); rapid-fire messages from same user combined (30s window)
-- Bug reports checked for duplicates against recently-reported Notion tickets (last 90 days, via Claude) — see `getRecentBugs()`
+- Bug reports checked for duplicates against all non-Done Notion tickets (via Claude) — see `getOpenBugsForDedup()`. "Done" is derived from the linked eng task's `Eng Sprint Status (Linked)` rollup (`isBugDone`); Done bugs are excluded so a re-emerged bug can file a fresh ticket. Matches against an in-progress ticket (has an Owner) get a distinct "already being worked on by X" reply.
 - Duplicates link to existing ticket; reporter can dispute to force a new ticket
 - Thread follow-ups only processed if providing bug detail; conversation is ignored
 - Pending store: Redis (30-day TTL, in-memory fallback). `DUPE:` prefix for dupe-dispute vs needs-detail threads
@@ -134,6 +134,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-07** — Dedup no longer uses a 90-day recency window (too many false positives — bugs re-emerge). `getRecentBugs()` → `getOpenBugsForDedup()`: compares against all non-Done bugs (Done derived from `Eng Sprint Status (Linked)` rollup via `isBugDone`), tagging each with `ownerNames`/`inProgress`. Duplicate replies now branch — in-progress matches (has Owner) say "already being worked on by X", unassigned matches get the standard reply.
 - **2026-07-07** — Bug screenshots are now uploaded into Notion (self-hosted) instead of hotlinked to Slack. `uploadSlackFileToNotion()` in `src/notion.ts` downloads the file with the bot token (needs `files:read`) and uses Notion's Direct File Upload API (`fileUploads.create`/`send`, single-part ≤20MB); falls back to a bookmark link if upload fails. Videos/non-images stay bookmarks. Removed `makeFilesPublic`/`sharedPublicURL` (needs a user token — always failed with the bot token).
 - **2026-07-07** — Added `Reporter` (person) to Bug Tracker, auto-set to the Slack message author. `slackUserToNotionId()` in `src/notion.ts` maps Slack sender → Notion member by email (reverse of `notionUserToSlackId`, cached via workspace member list). For thread follow-ups the reporter is the thread's root author, not the replier.
 - **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block and strip ```json markdown fences (sonnet-5 fences inconsistently, which broke JSON.parse). Ticket-created Slack reply now links the created bug page instead of the DB "Everything" view.

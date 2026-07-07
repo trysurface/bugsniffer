@@ -20,6 +20,10 @@ export interface ExistingBug {
   id: string;
   title: string;
   url: string;
+  /** Owner display names (empty if unassigned). */
+  ownerNames: string[];
+  /** True if the bug has an owner and its linked eng task isn't Done. */
+  inProgress: boolean;
 }
 
 function isFullPage(page: { object: string }): page is PageObjectResponse {
@@ -179,33 +183,66 @@ async function buildBugContentBlocks(text: string, files: SlackFile[]): Promise<
   return blocks;
 }
 
-const DEDUP_WINDOW_DAYS = 90;
+/**
+ * Read a bug's status from the "Eng Sprint Status (Linked)" rollup — an array
+ * of the linked eng task's status. Empty = no task yet (unassigned/new).
+ * Returns true only if a linked task is explicitly "Done".
+ */
+function isBugDone(page: PageObjectResponse): boolean {
+  const rollup = page.properties["Eng Sprint Status (Linked)"];
+  if (rollup?.type !== "rollup" || rollup.rollup.type !== "array") return false;
+  return rollup.rollup.array.some(
+    (item) => item.type === "status" && item.status?.name === "Done"
+  );
+}
 
 /**
- * Fetch recently-reported bugs for duplicate detection. The Bug Tracker has no
- * Status property (status is derived from the linked Eng Task), so we scope by
- * recency instead — matching against bugs filed in the last DEDUP_WINDOW_DAYS.
+ * Fetch open bugs for duplicate detection. We compare a new report only against
+ * bugs that aren't Done — split into unassigned (nobody's picked it up) and
+ * in-progress (has an owner). Done bugs are excluded entirely: bugs can
+ * re-emerge, so a fixed ticket shouldn't block a fresh report.
+ *
+ * The Bug Tracker has no Status property; "done" is derived from the linked eng
+ * task via the "Eng Sprint Status (Linked)" rollup (see isBugDone).
  */
-export async function getRecentBugs(): Promise<ExistingBug[]> {
-  const cutoff = new Date(Date.now() - DEDUP_WINDOW_DAYS * 24 * 60 * 60_000).toISOString();
-  const response = await notion.dataSources.query({
-    data_source_id: config.notion.dataSourceId,
-    filter: {
-      property: "created",
-      created_time: { on_or_after: cutoff },
-    },
-  });
+export async function getOpenBugsForDedup(): Promise<ExistingBug[]> {
+  const bugs: ExistingBug[] = [];
+  let cursor: string | undefined;
+  do {
+    const response = await notion.dataSources.query({
+      data_source_id: config.notion.dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
 
-  return response.results
-    .filter(isFullPage)
-    .map((page) => {
+    for (const page of response.results.filter(isFullPage)) {
+      if (isBugDone(page)) continue;
+
       const nameProp = page.properties.Name;
       const title =
         nameProp.type === "title"
           ? nameProp.title[0]?.plain_text ?? "(untitled)"
           : "(untitled)";
-      return { id: page.id, title, url: page.url };
-    });
+
+      const ownerProp = page.properties.Owner;
+      const owners = ownerProp.type === "people" ? ownerProp.people : [];
+      const ownerNames = owners.map(
+        (p) => ("name" in p && p.name ? p.name : "someone")
+      );
+
+      bugs.push({
+        id: page.id,
+        title,
+        url: page.url,
+        ownerNames,
+        inProgress: owners.length > 0,
+      });
+    }
+
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined;
+  } while (cursor);
+
+  return bugs;
 }
 
 // ── Slack helpers ───────────────────────────────────────────────────────────

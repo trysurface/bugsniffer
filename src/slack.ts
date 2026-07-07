@@ -1,7 +1,7 @@
 import { App } from "@slack/bolt";
 import { config } from "./config.js";
 import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
-import { createBugTicket, getRecentBugs, appendSlackLink, slackUserToNotionId } from "./notion.js";
+import { createBugTicket, getOpenBugsForDedup, appendSlackLink, slackUserToNotionId } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -357,7 +357,7 @@ async function checkForDuplicate(
   client: any,
   threadTs?: string
 ): Promise<boolean> {
-  const existingBugs = await getRecentBugs();
+  const existingBugs = await getOpenBugsForDedup();
   const dupResult = await findDuplicate(text, existingBugs);
 
   if (!dupResult.is_duplicate || !dupResult.matching_bug_id) return false;
@@ -365,7 +365,9 @@ async function checkForDuplicate(
   const match = existingBugs.find((b) => b.id === dupResult.matching_bug_id);
   if (!match) return false;
 
-  console.log(`  → Duplicate of existing ticket: "${match.title}" (${match.id})`);
+  console.log(
+    `  → Duplicate of existing ${match.inProgress ? "in-progress" : "unassigned"} ticket: "${match.title}" (${match.id})`
+  );
 
   const permalinkResponse = await client.chat.getPermalink({
     channel: config.slack.channelId,
@@ -375,8 +377,14 @@ async function checkForDuplicate(
 
   await appendSlackLink(match.id, slackLink);
 
+  // In-progress tickets (an owner has picked them up) get a distinct reply that
+  // names who's on it; unassigned tickets get the standard duplicate reply.
+  const dupeText = match.inProgress
+    ? `:hourglass_flowing_sand: This looks like a bug we're already on: *"${match.title}"* — currently being worked on by ${match.ownerNames.join(", ") || "someone"}. I've linked your message to the <${match.url}|Notion ticket>; no new ticket created. If it's actually a different issue, let me know and I'll create a separate ticket.`
+    : `:link: Looks like this bug has already been reported: *"${match.title}"*\n\nThe <${match.url}|Notion ticket> has been updated with a link to this message — no new ticket created. If this is actually a different issue, let me know and I'll create a separate ticket.`;
+
   await say({
-    text: `:link: Looks like this bug has already been reported: *"${match.title}"*\n\nThe <${match.url}|Notion ticket> has been updated with a link to this message — no new ticket created. If this is actually a different issue, let me know and I'll create a separate ticket.`,
+    text: dupeText,
     thread_ts: threadTs ?? messageTs,
   });
 
