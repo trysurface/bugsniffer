@@ -17,7 +17,6 @@ export interface SlackFile {
   filetype: string;
   url_private: string;
   permalink: string;
-  permalink_public?: string;
 }
 
 /** Subset of the Slack message event fields we actually use. */
@@ -405,15 +404,12 @@ async function createTicketAndConfirm(
   const slackLink = permalinkResponse.permalink as string;
   const title = suggestedTitle || text.slice(0, 100);
 
-  // Make Slack files public so they can be embedded in Notion
-  const publicFiles = await makeFilesPublic(client, files);
-
   // Resolve the reporter (Slack sender) to a Notion member for the Reporter field
   const reporterNotionId = reporterSlackId
     ? await slackUserToNotionId(reporterSlackId, client)
     : null;
 
-  const ticket = await createBugTicket(title, slackLink, text, publicFiles, reporterNotionId);
+  const ticket = await createBugTicket(title, slackLink, text, files, reporterNotionId);
 
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 
@@ -421,27 +417,4 @@ async function createTicketAndConfirm(
     text: `:bug: Added to Bug Tracker: <${ticket.url}|${title}>`,
     thread_ts: threadTs ?? messageTs,
   });
-}
-
-/** Make Slack files publicly accessible for embedding in Notion. */
-async function makeFilesPublic(
-  client: any,
-  files: SlackFile[]
-): Promise<SlackFile[]> {
-  const results: SlackFile[] = [];
-  for (const file of files) {
-    try {
-      const resp = await client.files.sharedPublicURL({ file: file.id });
-      results.push({ ...file, permalink_public: resp.file?.permalink_public });
-    } catch (err: any) {
-      const code = err?.data?.error;
-      if (code === "already_public") {
-        results.push(file);
-      } else {
-        console.warn(`[slack] Could not make file ${file.id} public: ${code ?? err}`);
-        results.push(file); // Still include — we'll fall back to permalink
-      }
-    }
-  }
-  return results;
 }

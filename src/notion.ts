@@ -77,18 +77,6 @@ function cleanSlackText(text: string): string {
     .replace(/&gt;/g, ">");
 }
 
-/**
- * Get a publicly accessible direct URL for a Slack file.
- * Uses permalink_public + pub_secret to construct a direct URL.
- */
-function getPublicFileUrl(file: SlackFile): string | null {
-  if (!file.permalink_public) return null;
-  // Extract the pub_secret from permalink_public
-  const match = file.permalink_public.match(/pub_secret=([a-f0-9]+)/);
-  if (!match) return null;
-  return `${file.url_private}?pub_secret=${match[1]}`;
-}
-
 // Notion's single-request upload API accepts files up to 20 MB; larger files
 // need multipart (rare for Slack screenshots, so we fall back to a link instead).
 const NOTION_SINGLE_PART_UPLOAD_LIMIT = 20 * 1024 * 1024;
@@ -179,12 +167,7 @@ async function buildBugContentBlocks(text: string, files: SlackFile[]): Promise<
         });
         continue;
       }
-      // Fall back to hotlinking the Slack public URL if the upload failed.
-      const publicUrl = getPublicFileUrl(file);
-      if (publicUrl) {
-        blocks.push({ image: { external: { url: publicUrl }, type: "external" } });
-        continue;
-      }
+      // Upload failed — fall through to a bookmark link below.
     }
 
     // Videos and other files — Notion only supports video embeds from
