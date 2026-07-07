@@ -49,7 +49,7 @@ export async function createBugTicket(
   if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
 
   // Build page content from the Slack message
-  const blocks = buildBugContentBlocks(messageText, files);
+  const blocks = await buildBugContentBlocks(messageText, files);
   if (blocks.length > 0) {
     await notion.blocks.children.append({
       block_id: page.id,
@@ -89,8 +89,59 @@ function getPublicFileUrl(file: SlackFile): string | null {
   return `${file.url_private}?pub_secret=${match[1]}`;
 }
 
+// Notion's single-request upload API accepts files up to 20 MB; larger files
+// need multipart (rare for Slack screenshots, so we fall back to a link instead).
+const NOTION_SINGLE_PART_UPLOAD_LIMIT = 20 * 1024 * 1024;
+
+/**
+ * Download a Slack file and upload the bytes into Notion, returning the
+ * file_upload id to attach to a block. Notion then self-hosts the file, so it
+ * survives the Slack file being deleted or its public link revoked.
+ *
+ * The Slack download is authenticated with the bot token (no need to make the
+ * file public). Returns null on any failure so the caller can fall back to a
+ * link — e.g. if the bot lacks `files:read` or the file exceeds the size limit.
+ */
+async function uploadSlackFileToNotion(file: SlackFile): Promise<string | null> {
+  try {
+    const res = await fetch(file.url_private, {
+      headers: { Authorization: `Bearer ${config.slack.botToken}` },
+    });
+    if (!res.ok) {
+      console.warn(`[upload] Slack download failed for ${file.name}: HTTP ${res.status}`);
+      return null;
+    }
+    // An unauthorized download (e.g. missing files:read scope) returns a 200
+    // HTML login page rather than the file bytes — detect and fall back.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
+      console.warn(`[upload] Slack returned HTML for ${file.name} (auth issue?) — falling back. Ensure the bot has files:read.`);
+      return null;
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength > NOTION_SINGLE_PART_UPLOAD_LIMIT) {
+      console.warn(`[upload] ${file.name} is ${bytes.byteLength} bytes (> 20MB) — falling back to link`);
+      return null;
+    }
+
+    const upload = await notion.fileUploads.create({
+      mode: "single_part",
+      filename: file.name,
+      content_type: file.mimetype,
+    });
+    await notion.fileUploads.send({
+      file_upload_id: upload.id,
+      file: { filename: file.name, data: new Blob([bytes], { type: file.mimetype }) },
+    });
+    return upload.id;
+  } catch (err) {
+    console.warn(`[upload] Failed to upload ${file.name} to Notion:`, err);
+    return null;
+  }
+}
+
 /** Build Notion blocks from Slack message text and files. */
-function buildBugContentBlocks(text: string, files: SlackFile[]): any[] {
+async function buildBugContentBlocks(text: string, files: SlackFile[]): Promise<any[]> {
   const blocks: any[] = [];
   const embedUrls = extractEmbedUrls(text);
 
@@ -117,23 +168,29 @@ function buildBugContentBlocks(text: string, files: SlackFile[]): any[] {
 
   // Slack file attachments
   for (const file of files) {
-    const publicUrl = getPublicFileUrl(file);
     const isImage = file.mimetype?.startsWith("image/");
-    const isVideo = file.mimetype?.startsWith("video/");
 
-    if (isImage && publicUrl) {
-      blocks.push({
-        image: {
-          external: { url: publicUrl },
-          type: "external",
-        },
-      });
-    } else {
-      // Videos and other files — Notion only supports video embeds from
-      // specific providers (Loom, YouTube, etc.), not raw file URLs.
-      // Use a bookmark with the Slack permalink so users can click through.
-      blocks.push({ bookmark: { url: file.permalink } });
+    if (isImage) {
+      // Upload the actual bytes into Notion so the image is self-hosted.
+      const uploadId = await uploadSlackFileToNotion(file);
+      if (uploadId) {
+        blocks.push({
+          image: { type: "file_upload", file_upload: { id: uploadId } },
+        });
+        continue;
+      }
+      // Fall back to hotlinking the Slack public URL if the upload failed.
+      const publicUrl = getPublicFileUrl(file);
+      if (publicUrl) {
+        blocks.push({ image: { external: { url: publicUrl }, type: "external" } });
+        continue;
+      }
     }
+
+    // Videos and other files — Notion only supports video embeds from
+    // specific providers (Loom, YouTube, etc.), not raw file URLs.
+    // Use a bookmark with the Slack permalink so users can click through.
+    blocks.push({ bookmark: { url: file.permalink } });
   }
 
   return blocks;

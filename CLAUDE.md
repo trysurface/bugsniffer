@@ -71,7 +71,7 @@ Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with 
 
 | Variable | Required | Description |
 |---|---|---|
-| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write, users:read, users:read.email |
+| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write, users:read, users:read.email, files:read (authenticated file download for Notion upload) |
 | `SLACK_APP_TOKEN` | ✅ | App-level token (xapp-...) for Socket Mode. Scope: connections:write |
 | `NOTION_API_KEY` | ✅ | Internal integration token (ntn_...) |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key (sk-ant-...) |
@@ -134,6 +134,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-07** — Bug screenshots are now uploaded into Notion (self-hosted) instead of hotlinked to Slack. `uploadSlackFileToNotion()` in `src/notion.ts` downloads the file with the bot token (needs `files:read`) and uses Notion's Direct File Upload API (`fileUploads.create`/`send`, single-part ≤20MB). Falls back to the old public-URL hotlink, then a bookmark, if upload fails. Videos/non-images still become bookmarks.
 - **2026-07-07** — Added `Reporter` (person) to Bug Tracker, auto-set to the Slack message author. `slackUserToNotionId()` in `src/notion.ts` maps Slack sender → Notion member by email (reverse of `notionUserToSlackId`, cached via workspace member list). For thread follow-ups the reporter is the thread's root author, not the replier.
 - **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block and strip ```json markdown fences (sonnet-5 fences inconsistently, which broke JSON.parse). Ticket-created Slack reply now links the created bug page instead of the DB "Everything" view.
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
@@ -143,4 +144,3 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 - **2026-03-19** — Thread follow-up filter: bot only responds to replies that provide bug detail.
 - **2026-03-19** — Duplicate detection: new bug reports matched against unresolved Notion tickets via Claude.
 - **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API.
-- **2026-03-18** — Initial TypeScript rewrite. Socket Mode bot, Claude classifier, Notion integration, Railway deployment.
