@@ -110,6 +110,7 @@ See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Ke
 - Bug reports checked for duplicates against all non-Done Notion tickets (via Claude) — see `getOpenBugsForDedup()`. "Done" is derived from the linked eng task's `Eng Sprint Status (Linked)` rollup (`isBugDone`); Done bugs are excluded so a re-emerged bug can file a fresh ticket. Matches against an in-progress ticket (has an Owner) get a distinct "already being worked on by X" reply.
 - Duplicates link to existing ticket; reporter can dispute to force a new ticket
 - Ambiguous reports (borderline bug, improvement to existing functionality, or small UX affordance on existing UI) aren't skipped — bot asks in-thread with Yes/No buttons (`bug_confirm_yes`/`_no` actions); Yes files a ticket directly (no dedup — human decided)
+- Larger feature requests get a one-off reply pointing at the Lead Ops / Content Ops Roadmaps (self-serve; URLs in `src/slack.ts`) — no ticket, no thread tracking
 - Thread follow-ups only processed if providing bug detail; conversation is ignored
 - After a ticket is created its thread stays watched: replies adding detail are appended to the Notion page (`appendThreadUpdate`), acked with a 📝 reaction
 - Pending store: Redis (30-day TTL, in-memory fallback). Value prefixes route thread replies: none = needs-detail, `DUPE:` dispute, `CONFIRM:` awaiting buttons, `TICKET:` ticket exists (pageId + lastTs watermark)
@@ -137,7 +138,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
-- **2026-07-13** — Ambiguity widened: small UX affordances on existing UI ("X should be clickable", hover info) now also trigger the Yes/No prompt; only major new capabilities skip silently.
+- **2026-07-13** — Ambiguity widened: small UX affordances on existing UI ("X should be clickable", hover info) now also trigger the Yes/No prompt. Larger feature requests (`is_feature_request`) get a reply pointing at the Lead Ops / Content Ops Roadmaps instead of a silent skip; design opinions, questions, chit-chat stay silent.
 - **2026-07-10** — Ambiguous reports (borderline bug / improvement) now get in-thread Yes/No buttons instead of a silent skip (`is_ambiguous` in classifier, `CONFIRM:` store prefix; needs Interactivity enabled in the Slack app). Ticket threads stay watched (`TICKET:` prefix): detail-adding replies are appended to the Notion page with screenshots (`appendThreadUpdate`), 📝 reaction ack (needs `reactions:write`). Also fixed needs-detail→dupe path deleting the `DUPE:` entry, which broke dispute handling.
 - **2026-07-07** — Dedup no longer uses a 90-day recency window (too many false positives — bugs re-emerge). `getRecentBugs()` → `getOpenBugsForDedup()`: compares against all non-Done bugs (Done derived from `Eng Sprint Status (Linked)` rollup via `isBugDone`), tagging each with `ownerNames`/`inProgress`. Duplicate replies now branch — in-progress matches (has Owner) say "already being worked on by X", unassigned matches get the standard reply.
 - **2026-07-07** — Bug screenshots are now uploaded into Notion (self-hosted) instead of hotlinked to Slack. `uploadSlackFileToNotion()` in `src/notion.ts` downloads the file with the bot token (needs `files:read`) and uses Notion's Direct File Upload API (`fileUploads.create`/`send`, single-part ≤20MB); falls back to a bookmark link if upload fails. Videos/non-images stay bookmarks. Removed `makeFilesPublic`/`sharedPublicURL` (needs a user token — always failed with the bot token).
@@ -146,4 +147,3 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
 - **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.
-- **2026-03-19** — Dupe dispute: users can reply "that's a different bug" to override duplicate classification.

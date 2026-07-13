@@ -27,6 +27,12 @@ const DUPE_PREFIX = "DUPE:";
 const CONFIRM_PREFIX = "CONFIRM:";
 const TICKET_PREFIX = "TICKET:";
 
+// Where we point people for substantial feature requests (self-serve)
+const LEAD_OPS_ROADMAP_URL =
+  "https://app.notion.com/p/withsurface/Lead-Ops-Roadmap-38444c625b9f8063a196edd6ddc5b498";
+const CONTENT_OPS_ROADMAP_URL =
+  "https://app.notion.com/p/withsurface/Content-Ops-Roadmap-38344c625b9f80948b9fea03f1f4bc00";
+
 /** Subset of the Slack message event fields we actually use. */
 interface SlackMessage {
   channel: string;
@@ -288,6 +294,16 @@ async function processMessage(
     if (result.is_ambiguous) {
       console.log(`  → Ambiguous (borderline bug / improvement). Asking whether to file a ticket.`);
       await askTicketConfirmation(result.suggested_title, text, message.ts!, say);
+      return;
+    }
+    if (result.is_feature_request) {
+      // Larger feature requests: point at the roadmaps, end the conversation
+      // there — no ticket, no buttons, no thread tracking.
+      console.log(`  → Feature request. Pointing at the roadmaps.`);
+      await say({
+        text: `:bulb: This looks like a feature request rather than a bug, so I haven't filed it in the Bug Tracker. To get it on the roadmap, add it to the <${LEAD_OPS_ROADMAP_URL}|Lead Ops Roadmap> or the <${CONTENT_OPS_ROADMAP_URL}|Content Ops Roadmap> — whichever fits best.`,
+        thread_ts: message.ts,
+      });
       return;
     }
     console.log(`  → Not a bug. Skipping.`);

@@ -28,6 +28,13 @@ export interface ClassificationResult {
    * instead of a silent skip.
    */
   is_ambiguous: boolean;
+  /**
+   * True for substantial new-functionality requests (new modes, pages,
+   * integrations). These get a "please add it to a roadmap yourself" reply
+   * instead of a ticket or a confirmation prompt. Only consulted when
+   * is_bug and is_ambiguous are both false.
+   */
+  is_feature_request: boolean;
   has_sufficient_detail: boolean;
   suggested_title: string | null;
   reasoning: string;
@@ -47,7 +54,8 @@ Analyze the following Slack message and determine:
    - It describes an IMPROVEMENT to existing functionality — something that works but works poorly (slow performance, confusing UX, "should also show X", "Improvement Needed" posts)
    - It suggests a small UX affordance on an EXISTING screen or element — making something clickable, linking to a related view, showing extra info on hover ("X should be clickable", "X should take you to Y")
    Do NOT set is_ambiguous for clear-cut non-bugs: major new features or product capabilities, design opinions, questions, or chit-chat.
-3. If it IS a bug report, does it have sufficient detail to act on? Sufficient means at least one of:
+3. If it is neither a bug nor ambiguous: is it a FEATURE REQUEST — a request for substantial new functionality or capability (new modes, new pages, new workflows, new integrations)? Set "is_feature_request" to true. Design opinions, general questions, and chit-chat are NOT feature requests.
+4. If it IS a bug report, does it have sufficient detail to act on? Sufficient means at least one of:
    - Steps to reproduce or a description of what happened vs what was expected
    - A Loom video link
    - Screenshots showing the bug (the message has attachments: ${hasFiles ? "YES" : "NO"})
@@ -61,7 +69,7 @@ A message like "we need a way to archive forms" is a feature request, NOT a bug.
 A message like "any way to make analytics load faster? takes 7+ seconds" is an improvement to existing functionality — is_bug false, is_ambiguous true.
 A message like "Bug: there is no custom meeting length setting" is labeled a bug but describes missing functionality — is_bug false, is_ambiguous true.
 A message like "step names should be clickable and take you to the logic tab" is a UX affordance on existing UI — is_bug false, is_ambiguous true.
-A message like "let's add an agent mode that turns form building into a chat" is a major new capability — is_bug false, is_ambiguous false.
+A message like "let's add an agent mode that turns form building into a chat" is a major new capability — is_bug false, is_ambiguous false, is_feature_request true.
 
 The message contains a Loom link: ${hasLoomLink ? "YES" : "NO"}
 
@@ -69,6 +77,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
 {
   "is_bug": true/false,
   "is_ambiguous": true/false,
+  "is_feature_request": true/false,
   "has_sufficient_detail": true/false,
   "suggested_title": "Short descriptive title for the ticket (if is_bug or is_ambiguous, otherwise null)",
   "reasoning": "Brief explanation of your classification"
@@ -83,6 +92,7 @@ ${messageText}
 const FALLBACK: ClassificationResult = {
   is_bug: false,
   is_ambiguous: false,
+  is_feature_request: false,
   has_sufficient_detail: false,
   suggested_title: null,
   reasoning: "Classification failed — defaulting to skip.",
