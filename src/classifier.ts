@@ -45,7 +45,8 @@ Analyze the following Slack message and determine:
 2. If it is NOT clearly a bug report, is it ambiguous enough that a ticket might still be warranted? Set "is_ambiguous" to true when:
    - It's a borderline call between bug and not-bug (e.g. labeled "Bug:" but describes missing functionality, or it's unclear whether the behavior is broken or working-as-designed)
    - It describes an IMPROVEMENT to existing functionality — something that works but works poorly (slow performance, confusing UX, "should also show X", "Improvement Needed" posts)
-   Do NOT set is_ambiguous for clear-cut non-bugs: requests for brand-new features, design opinions, questions, or chit-chat.
+   - It suggests a small UX affordance on an EXISTING screen or element — making something clickable, linking to a related view, showing extra info on hover ("X should be clickable", "X should take you to Y")
+   Do NOT set is_ambiguous for clear-cut non-bugs: major new features or product capabilities, design opinions, questions, or chit-chat.
 3. If it IS a bug report, does it have sufficient detail to act on? Sufficient means at least one of:
    - Steps to reproduce or a description of what happened vs what was expected
    - A Loom video link
@@ -59,6 +60,8 @@ A message like "really don't like how this page looks" is design feedback, NOT a
 A message like "we need a way to archive forms" is a feature request, NOT a bug.
 A message like "any way to make analytics load faster? takes 7+ seconds" is an improvement to existing functionality — is_bug false, is_ambiguous true.
 A message like "Bug: there is no custom meeting length setting" is labeled a bug but describes missing functionality — is_bug false, is_ambiguous true.
+A message like "step names should be clickable and take you to the logic tab" is a UX affordance on existing UI — is_bug false, is_ambiguous true.
+A message like "let's add an agent mode that turns form building into a chat" is a major new capability — is_bug false, is_ambiguous false.
 
 The message contains a Loom link: ${hasLoomLink ? "YES" : "NO"}
 

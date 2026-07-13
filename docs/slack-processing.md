@@ -14,7 +14,7 @@ All responses are debounced by 3 seconds (`DEBOUNCE_MS` in `src/slack.ts`). This
 1. **Skip check** — bot messages, system subtypes, empty text, wrong channel are all filtered out (`shouldSkipMessage()`).
 2. **Classification** — Claude determines: is it a bug? Is it ambiguous? Does it have enough detail?
 3. **Not a bug, not ambiguous** → silently ignored (new-feature requests, design opinions, chit-chat).
-4. **Ambiguous** (borderline bug-vs-not, or an improvement to existing functionality — slow performance, "should also show X", "Improvement Needed" posts) → bot posts an in-thread prompt with **Yes/No buttons** asking whether to file a ticket (`askTicketConfirmation`). Thread stored with `CONFIRM:` prefix (JSON: text + suggested title).
+4. **Ambiguous** (borderline bug-vs-not, an improvement to existing functionality — slow performance, "should also show X", "Improvement Needed" posts — or a small UX affordance on existing UI, e.g. "X should be clickable") → bot posts an in-thread prompt with **Yes/No buttons** asking whether to file a ticket (`askTicketConfirmation`). Thread stored with `CONFIRM:` prefix (JSON: text + suggested title).
    - **Yes** → ticket created immediately (no dedup check — a human explicitly asked), buttons replaced with a confirmation. Thread transitions to `TICKET:` watching.
    - **No** → buttons replaced with a dismissal note, pending entry cleared.
    - Text replies in these threads are ignored — the buttons are the interface.
