@@ -1,7 +1,7 @@
-import { App } from "@slack/bolt";
+import { App, type BlockAction, type ButtonAction } from "@slack/bolt";
 import { config } from "./config.js";
 import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
-import { createBugTicket, getOpenBugsForDedup, appendSlackLink, slackUserToNotionId } from "./notion.js";
+import { createBugTicket, getOpenBugsForDedup, appendSlackLink, appendThreadUpdate, slackUserToNotionId } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -18,6 +18,14 @@ export interface SlackFile {
   url_private: string;
   permalink: string;
 }
+
+/**
+ * Pending-store value prefixes — they mark what kind of interaction a thread
+ * is waiting on (see docs/slack-processing.md). No prefix = needs-detail.
+ */
+const DUPE_PREFIX = "DUPE:";
+const CONFIRM_PREFIX = "CONFIRM:";
+const TICKET_PREFIX = "TICKET:";
 
 /** Subset of the Slack message event fields we actually use. */
 interface SlackMessage {
@@ -43,6 +51,27 @@ export function createSlackApp(): App {
       await handleMessage(message as SlackMessage, say, client);
     } catch (err) {
       console.error("[slack] Error handling message:", err);
+    }
+  });
+
+  // Yes/No buttons on the "not sure this is a bug" confirmation prompt.
+  // Requires Interactivity enabled in the Slack app config (delivered over
+  // the Socket Mode connection — no Request URL needed).
+  app.action<BlockAction<ButtonAction>>("bug_confirm_yes", async ({ ack, body, action, client }) => {
+    await ack();
+    try {
+      await handleTicketConfirm(body, action, client, true);
+    } catch (err) {
+      console.error("[slack] Error handling ticket confirmation:", err);
+    }
+  });
+
+  app.action<BlockAction<ButtonAction>>("bug_confirm_no", async ({ ack, body, action, client }) => {
+    await ack();
+    try {
+      await handleTicketConfirm(body, action, client, false);
+    } catch (err) {
+      console.error("[slack] Error handling ticket decline:", err);
     }
   });
 
@@ -256,6 +285,11 @@ async function processMessage(
   console.log(`[${ts}] 🔍 Classification:`, JSON.stringify(result));
 
   if (!result.is_bug) {
+    if (result.is_ambiguous) {
+      console.log(`  → Ambiguous (borderline bug / improvement). Asking whether to file a ticket.`);
+      await askTicketConfirmation(result.suggested_title, text, message.ts!, say);
+      return;
+    }
     console.log(`  → Not a bug. Skipping.`);
     return;
   }
@@ -283,20 +317,37 @@ async function handleThreadFollowUp(
   client: any
 ): Promise<void> {
   const threadTs = message.thread_ts!;
-  const threadFiles = await getThreadFiles(client, message.channel, threadTs);
-  const hasFiles = threadFiles.length > 0;
   const ts = new Date().toISOString();
-  const stored = (await getPendingThread(threadTs))!;
-  // Reporter is whoever started the thread, not the follow-up replier
-  const reporterSlackId = await getThreadRootAuthor(client, message.channel, threadTs);
+  // May have been cleared between the debounce being scheduled and firing
+  // (e.g. a confirmation button was clicked in the meantime)
+  const stored = await getPendingThread(threadTs);
+  if (!stored) return;
 
   console.log(
     `[${ts}] 🧵 Follow-up in pending thread ${threadTs} from ${message.user}`
   );
 
+  // Threads awaiting a Yes/No ticket confirmation — the buttons are the
+  // interface; text replies are ignored.
+  if (stored.startsWith(CONFIRM_PREFIX)) {
+    console.log(`  → Thread is awaiting ticket confirmation buttons. Ignoring reply.`);
+    return;
+  }
+
+  // Threads that already have a ticket — append useful follow-ups to it
+  if (stored.startsWith(TICKET_PREFIX)) {
+    await handleTicketThreadUpdate(message, client, threadTs, stored);
+    return;
+  }
+
+  const threadFiles = await getThreadFiles(client, message.channel, threadTs);
+  const hasFiles = threadFiles.length > 0;
+  // Reporter is whoever started the thread, not the follow-up replier
+  const reporterSlackId = await getThreadRootAuthor(client, message.channel, threadTs);
+
   // Handle dupe-dispute threads
-  if (stored.startsWith("DUPE:")) {
-    const originalText = stored.slice(5);
+  if (stored.startsWith(DUPE_PREFIX)) {
+    const originalText = stored.slice(DUPE_PREFIX.length);
     // Fetch recent non-bot replies for context (user might split across messages)
     const recentReplies = await getRecentUserReplies(client, message.channel, threadTs);
     const disputing = await isDisputingDupe(recentReplies);
@@ -309,7 +360,7 @@ async function handleThreadFollowUp(
     await deletePendingThread(threadTs);
     const classResult = await classifyMessage(originalText, hasFiles);
     const title = classResult.suggested_title || originalText.slice(0, 100);
-    await createTicketAndConfirm(title, originalText, threadFiles, threadTs, say, client, threadTs, reporterSlackId);
+    await createTicketAndConfirm(title, originalText, threadFiles, threadTs, say, client, threadTs, reporterSlackId, message.ts);
     return;
   }
 
@@ -334,15 +385,14 @@ async function handleThreadFollowUp(
     return;
   }
 
-  // Check for duplicate before creating a new ticket
+  // Check for duplicate before creating a new ticket. On a match,
+  // checkForDuplicate replaces this thread's pending entry with a DUPE:
+  // one — don't delete it, or the reporter can't dispute.
   const duplicate = await checkForDuplicate(combinedText, threadTs, say, client, threadTs);
-  if (duplicate) {
-    await deletePendingThread(threadTs);
-    return;
-  }
+  if (duplicate) return;
 
   await deletePendingThread(threadTs);
-  await createTicketAndConfirm(result.suggested_title, combinedText, threadFiles, threadTs, say, client, threadTs, reporterSlackId);
+  await createTicketAndConfirm(result.suggested_title, combinedText, threadFiles, threadTs, say, client, threadTs, reporterSlackId, message.ts);
 }
 
 /**
@@ -390,7 +440,7 @@ async function checkForDuplicate(
 
   // Track this thread so we can handle disputes
   const replyTo = threadTs ?? messageTs;
-  await setPendingThread(replyTo, `DUPE:${text}`);
+  await setPendingThread(replyTo, DUPE_PREFIX + text);
 
   return true;
 }
@@ -403,7 +453,8 @@ async function createTicketAndConfirm(
   say: Function,
   client: any,
   threadTs?: string,
-  reporterSlackId?: string
+  reporterSlackId?: string,
+  watchSinceTs?: string
 ): Promise<void> {
   const permalinkResponse = await client.chat.getPermalink({
     channel: config.slack.channelId,
@@ -421,8 +472,207 @@ async function createTicketAndConfirm(
 
   console.log(`  → ✅ Created Notion ticket: ${ticket.url}`);
 
+  // Keep watching the thread: later replies that add useful detail get
+  // appended to the ticket. lastTs is the watermark — only replies newer
+  // than it are considered, so nothing is appended twice.
+  await setPendingThread(
+    threadTs ?? messageTs,
+    TICKET_PREFIX + JSON.stringify({ pageId: ticket.id, lastTs: watchSinceTs ?? messageTs })
+  );
+
   await say({
     text: `:bug: Added to Bug Tracker: <${ticket.url}|${title}>`,
     thread_ts: threadTs ?? messageTs,
   });
+}
+
+// ── Ambiguous-report confirmation buttons ───────────────────────────────────
+
+/**
+ * For borderline messages (labeled "Bug" but reads like a missing feature,
+ * improvements to existing functionality, etc.) — instead of silently
+ * skipping, ask in-thread with Yes/No buttons whether to file a ticket.
+ */
+async function askTicketConfirmation(
+  suggestedTitle: string | null,
+  text: string,
+  messageTs: string,
+  say: Function
+): Promise<void> {
+  await setPendingThread(
+    messageTs,
+    CONFIRM_PREFIX + JSON.stringify({ text, title: suggestedTitle })
+  );
+
+  const prompt =
+    ":thinking_face: This reads more like an improvement/feature request than a bug, so I haven't filed it automatically. Want a ticket anyway?";
+
+  await say({
+    text: `${prompt} Reply isn't monitored — use the buttons.`,
+    thread_ts: messageTs,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: prompt } },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Yes, create a ticket" },
+            style: "primary",
+            action_id: "bug_confirm_yes",
+            value: messageTs,
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "No, skip it" },
+            action_id: "bug_confirm_no",
+            value: messageTs,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** Handle a click on the Yes/No ticket confirmation buttons. */
+async function handleTicketConfirm(
+  body: BlockAction<ButtonAction>,
+  action: ButtonAction,
+  client: any,
+  confirmed: boolean
+): Promise<void> {
+  const rootTs = action.value; // ts of the original report message
+  const channel = body.channel?.id;
+  const promptTs = body.message?.ts;
+  if (!rootTs || !channel || !promptTs) return;
+
+  const clicker = body.user.id;
+  const stored = await getPendingThread(rootTs);
+  await deletePendingThread(rootTs);
+
+  // Replace the button message so the buttons can't be clicked twice
+  const finalize = (text: string) =>
+    client.chat.update({
+      channel,
+      ts: promptTs,
+      text,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+    });
+
+  if (!confirmed) {
+    console.log(`  → Ticket declined by ${clicker} for ${rootTs}`);
+    await finalize(`:+1: Got it — no ticket created (dismissed by <@${clicker}>).`);
+    return;
+  }
+
+  console.log(`  → Ticket confirmed by ${clicker} for ${rootTs}. Creating.`);
+
+  // Prefer the text/title captured at classification time (may combine
+  // rapid-fire messages); fall back to re-reading the thread if the store
+  // was lost (e.g. in-memory fallback across a restart).
+  let text: string | null = null;
+  let title: string | null = null;
+  if (stored?.startsWith(CONFIRM_PREFIX)) {
+    const parsed = JSON.parse(stored.slice(CONFIRM_PREFIX.length));
+    text = parsed.text;
+    title = parsed.title;
+  }
+
+  const result = await client.conversations.replies({
+    channel,
+    ts: rootTs,
+    limit: 50,
+  });
+  const threadMessages: any[] = result.messages ?? [];
+  const root = threadMessages[0];
+  if (!text) text = root?.text ?? "";
+  if (!text) {
+    await finalize(":warning: Couldn't recover the original message — please repost the report.");
+    return;
+  }
+
+  const files: SlackFile[] = threadMessages
+    .filter((m) => !m.bot_id)
+    .flatMap((m) => m.files ?? []);
+  const reporterSlackId = root?.user;
+  // Watermark for follow-up appends: everything currently in the thread is
+  // already part of the ticket (or predates it) — only newer replies append.
+  const latestTs = threadMessages.reduce(
+    (max, m) => (parseFloat(m.ts) > parseFloat(max) ? m.ts : max),
+    rootTs
+  );
+
+  const sayInThread = (args: any) => client.chat.postMessage({ channel, ...args });
+  await createTicketAndConfirm(title, text, files, rootTs, sayInThread, client, rootTs, reporterSlackId, latestTs);
+  await finalize(`:white_check_mark: <@${clicker}> confirmed — ticket created.`);
+}
+
+// ── Ticket-thread follow-up appends ─────────────────────────────────────────
+
+/**
+ * A reply arrived in a thread that already has a ticket. If the replies since
+ * the last append add useful detail (per Claude), append them — text and
+ * screenshots — to the Notion page and advance the watermark.
+ */
+async function handleTicketThreadUpdate(
+  message: SlackMessage,
+  client: any,
+  threadTs: string,
+  stored: string
+): Promise<void> {
+  const meta = JSON.parse(stored.slice(TICKET_PREFIX.length)) as {
+    pageId: string;
+    lastTs: string;
+  };
+
+  const result = await client.conversations.replies({
+    channel: message.channel,
+    ts: threadTs,
+    limit: 50,
+  });
+  const fresh: any[] = (result.messages ?? []).filter(
+    (m: any) =>
+      !m.bot_id && m.ts !== threadTs && parseFloat(m.ts) > parseFloat(meta.lastTs)
+  );
+  if (fresh.length === 0) return;
+
+  const text = fresh.map((m) => m.text ?? "").filter(Boolean).join("\n");
+  const files: SlackFile[] = fresh.flatMap((m) => m.files ?? []);
+
+  // Advance the watermark either way: conversational replies shouldn't be
+  // re-evaluated (and possibly appended) alongside a later detail reply.
+  const latestTs = fresh[fresh.length - 1].ts;
+  await setPendingThread(
+    threadTs,
+    TICKET_PREFIX + JSON.stringify({ pageId: meta.pageId, lastTs: latestTs })
+  );
+
+  const providingDetail = await isProvidingBugDetail(text, files.length > 0);
+  if (!providingDetail) {
+    console.log(`  → Reply in ticket thread is conversation, not detail. Ignoring.`);
+    return;
+  }
+
+  let authorName: string | undefined;
+  try {
+    const info = await client.users.info({ user: message.user });
+    authorName = info.user?.profile?.display_name || info.user?.real_name || undefined;
+  } catch {
+    // attribution is nice-to-have
+  }
+
+  await appendThreadUpdate(meta.pageId, text, files, authorName);
+  console.log(`  → 📎 Appended thread update to ticket ${meta.pageId}`);
+
+  // Acknowledge with a reaction rather than a reply to keep the thread quiet.
+  // Needs reactions:write; degrades to a log line without it.
+  try {
+    await client.reactions.add({
+      channel: message.channel,
+      timestamp: message.ts,
+      name: "memo",
+    });
+  } catch (err) {
+    console.warn("[slack] Could not add reaction (missing reactions:write scope?):", err);
+  }
 }

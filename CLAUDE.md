@@ -71,7 +71,7 @@ Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with 
 
 | Variable | Required | Description |
 |---|---|---|
-| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write, users:read, users:read.email, files:read (authenticated file download for Notion upload) |
+| `SLACK_BOT_TOKEN` | ✅ | Bot token (xoxb-...). Scopes: channels:history, channels:read, chat:write, users:read, users:read.email, files:read (authenticated file download for Notion upload), reactions:write (📝 ack on ticket-thread appends) |
 | `SLACK_APP_TOKEN` | ✅ | App-level token (xapp-...) for Socket Mode. Scope: connections:write |
 | `NOTION_API_KEY` | ✅ | Internal integration token (ntn_...) |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key (sk-ant-...) |
@@ -109,8 +109,10 @@ See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Ke
 - All responses debounced (3s); rapid-fire messages from same user combined (30s window)
 - Bug reports checked for duplicates against all non-Done Notion tickets (via Claude) — see `getOpenBugsForDedup()`. "Done" is derived from the linked eng task's `Eng Sprint Status (Linked)` rollup (`isBugDone`); Done bugs are excluded so a re-emerged bug can file a fresh ticket. Matches against an in-progress ticket (has an Owner) get a distinct "already being worked on by X" reply.
 - Duplicates link to existing ticket; reporter can dispute to force a new ticket
+- Ambiguous reports (borderline bug / improvement to existing functionality) aren't skipped — bot asks in-thread with Yes/No buttons (`bug_confirm_yes`/`_no` actions); Yes files a ticket directly (no dedup — human decided)
 - Thread follow-ups only processed if providing bug detail; conversation is ignored
-- Pending store: Redis (30-day TTL, in-memory fallback). `DUPE:` prefix for dupe-dispute vs needs-detail threads
+- After a ticket is created its thread stays watched: replies adding detail are appended to the Notion page (`appendThreadUpdate`), acked with a 📝 reaction
+- Pending store: Redis (30-day TTL, in-memory fallback). Value prefixes route thread replies: none = needs-detail, `DUPE:` dispute, `CONFIRM:` awaiting buttons, `TICKET:` ticket exists (pageId + lastTs watermark)
 
 ## Future work
 
@@ -128,12 +130,14 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 - **Never use `as any` to silence type errors.** If the SDK types don't match, check the SDK version's actual API surface (e.g. Notion SDK v5 moved `databases.query` → `dataSources.query`). Casting hides runtime errors.
 - Slack Socket Mode requires the `SLACK_APP_TOKEN` (app-level token), separate from the bot token
+- The Yes/No buttons require **Interactivity** toggled on in the Slack app config (payloads arrive via Socket Mode; no Request URL) — without it, clicks silently do nothing
 - The bot must be invited to the channel (`/invite @BotName`) or it won't receive messages
 - The Notion integration must be shared with both the Bug Tracker and Eng Task Tracker databases (database ⋯ → Connections → Add)
 - Always use `client.chat.getPermalink()` for Slack URLs — never construct them manually (workspace subdomain varies)
 
 ## Changelog
 
+- **2026-07-10** — Ambiguous reports (borderline bug / improvement) now get in-thread Yes/No buttons instead of a silent skip (`is_ambiguous` in classifier, `CONFIRM:` store prefix; needs Interactivity enabled in the Slack app). Ticket threads stay watched (`TICKET:` prefix): detail-adding replies are appended to the Notion page with screenshots (`appendThreadUpdate`), 📝 reaction ack (needs `reactions:write`). Also fixed needs-detail→dupe path deleting the `DUPE:` entry, which broke dispute handling.
 - **2026-07-07** — Dedup no longer uses a 90-day recency window (too many false positives — bugs re-emerge). `getRecentBugs()` → `getOpenBugsForDedup()`: compares against all non-Done bugs (Done derived from `Eng Sprint Status (Linked)` rollup via `isBugDone`), tagging each with `ownerNames`/`inProgress`. Duplicate replies now branch — in-progress matches (has Owner) say "already being worked on by X", unassigned matches get the standard reply.
 - **2026-07-07** — Bug screenshots are now uploaded into Notion (self-hosted) instead of hotlinked to Slack. `uploadSlackFileToNotion()` in `src/notion.ts` downloads the file with the bot token (needs `files:read`) and uses Notion's Direct File Upload API (`fileUploads.create`/`send`, single-part ≤20MB); falls back to a bookmark link if upload fails. Videos/non-images stay bookmarks. Removed `makeFilesPublic`/`sharedPublicURL` (needs a user token — always failed with the bot token).
 - **2026-07-07** — Added `Reporter` (person) to Bug Tracker, auto-set to the Slack message author. `slackUserToNotionId()` in `src/notion.ts` maps Slack sender → Notion member by email (reverse of `notionUserToSlackId`, cached via workspace member list). For thread follow-ups the reporter is the thread's root author, not the replier.
@@ -143,5 +147,3 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 - **2026-03-19** — Debounce: all bot responses wait 3s; rapid-fire messages from same user combined.
 - **2026-03-19** — Dupe dispute: users can reply "that's a different bug" to override duplicate classification.
 - **2026-03-19** — Thread follow-up filter: bot only responds to replies that provide bug detail.
-- **2026-03-19** — Duplicate detection: new bug reports matched against unresolved Notion tickets via Claude.
-- **2026-03-19** — Fixed Slack permalink generation: replaced manual URL builder with `chat.getPermalink` API.

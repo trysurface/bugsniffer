@@ -21,6 +21,13 @@ function extractText(response: Anthropic.Message): string {
 
 export interface ClassificationResult {
   is_bug: boolean;
+  /**
+   * True when the message isn't clearly a bug but a reasonable person might
+   * still want a ticket — borderline bug-vs-not calls and improvements to
+   * existing functionality. Triggers a Yes/No confirmation prompt in Slack
+   * instead of a silent skip.
+   */
+  is_ambiguous: boolean;
   has_sufficient_detail: boolean;
   suggested_title: string | null;
   reasoning: string;
@@ -35,7 +42,11 @@ function buildPrompt(
 
 Analyze the following Slack message and determine:
 1. Is this a bug report? (NOT a feature request, design feedback, general question, or chit-chat)
-2. If it IS a bug report, does it have sufficient detail to act on? Sufficient means at least one of:
+2. If it is NOT clearly a bug report, is it ambiguous enough that a ticket might still be warranted? Set "is_ambiguous" to true when:
+   - It's a borderline call between bug and not-bug (e.g. labeled "Bug:" but describes missing functionality, or it's unclear whether the behavior is broken or working-as-designed)
+   - It describes an IMPROVEMENT to existing functionality — something that works but works poorly (slow performance, confusing UX, "should also show X", "Improvement Needed" posts)
+   Do NOT set is_ambiguous for clear-cut non-bugs: requests for brand-new features, design opinions, questions, or chit-chat.
+3. If it IS a bug report, does it have sufficient detail to act on? Sufficient means at least one of:
    - Steps to reproduce or a description of what happened vs what was expected
    - A Loom video link
    - Screenshots showing the bug (the message has attachments: ${hasFiles ? "YES" : "NO"})
@@ -46,14 +57,17 @@ A message like "the logic flow nodes aren't connected by default" with a screens
 A message like "lead scoring is not working — no column for Score is being shown" with a screenshot IS sufficient.
 A message like "really don't like how this page looks" is design feedback, NOT a bug.
 A message like "we need a way to archive forms" is a feature request, NOT a bug.
+A message like "any way to make analytics load faster? takes 7+ seconds" is an improvement to existing functionality — is_bug false, is_ambiguous true.
+A message like "Bug: there is no custom meeting length setting" is labeled a bug but describes missing functionality — is_bug false, is_ambiguous true.
 
 The message contains a Loom link: ${hasLoomLink ? "YES" : "NO"}
 
 Respond with ONLY a valid JSON object (no markdown, no backticks):
 {
   "is_bug": true/false,
+  "is_ambiguous": true/false,
   "has_sufficient_detail": true/false,
-  "suggested_title": "Short descriptive title for the bug ticket (only if is_bug && has_sufficient_detail, otherwise null)",
+  "suggested_title": "Short descriptive title for the ticket (if is_bug or is_ambiguous, otherwise null)",
   "reasoning": "Brief explanation of your classification"
 }
 
@@ -65,6 +79,7 @@ ${messageText}
 
 const FALLBACK: ClassificationResult = {
   is_bug: false,
+  is_ambiguous: false,
   has_sufficient_detail: false,
   suggested_title: null,
   reasoning: "Classification failed — defaulting to skip.",

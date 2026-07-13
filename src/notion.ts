@@ -692,6 +692,35 @@ export async function postAssignmentDigest(slackClient: WebClient): Promise<void
   console.log(`[digest] Posted digest to channel: ${newBugs.length} new, ${assignments.length} assigned, ${completedBugs.length} completed`);
 }
 
+/**
+ * Append a thread follow-up (text + files) to an existing ticket's body,
+ * under a bolded attribution line. Used when someone adds useful detail in
+ * the Slack thread after the ticket was created.
+ */
+export async function appendThreadUpdate(
+  pageId: string,
+  text: string,
+  files: SlackFile[],
+  authorName?: string
+): Promise<void> {
+  const header = {
+    paragraph: {
+      rich_text: [
+        {
+          text: { content: `Thread update${authorName ? ` from ${authorName}` : ""}:` },
+          annotations: { bold: true },
+        },
+      ],
+    },
+  };
+  const blocks = await buildBugContentBlocks(text, files);
+  if (blocks.length === 0) return;
+  await notion.blocks.children.append({
+    block_id: pageId,
+    children: [header, ...blocks],
+  });
+}
+
 /** Append a "Also reported in: <slackUrl>" line to an existing ticket's body. */
 export async function appendSlackLink(
   pageId: string,
