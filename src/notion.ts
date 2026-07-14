@@ -445,9 +445,9 @@ export async function getBugsNeedingEngTask(): Promise<BugNeedingEngTask[]> {
     const slackThreadUrl =
       slackProp.type === "url" ? slackProp.url : null;
 
-    const createdProp = page.properties.created;
+    const createdProp = page.properties["Bug Report Created On"];
     const createdAt =
-      createdProp.type === "created_time"
+      createdProp?.type === "created_time"
         ? createdProp.created_time.split("T")[0]
         : new Date().toISOString().split("T")[0];
 
@@ -614,7 +614,7 @@ async function getNewBugsSince(cutoff: string): Promise<{ title: string; url: st
   const response = await notion.dataSources.query({
     data_source_id: config.notion.dataSourceId,
     filter: {
-      property: "created",
+      property: "Bug Report Created On",
       created_time: { on_or_after: cutoff },
     },
   });
