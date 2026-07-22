@@ -3,6 +3,7 @@ import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoint
 import type { WebClient } from "@slack/web-api";
 import type { SlackFile } from "./slack.js";
 import { config } from "./config.js";
+import { hasNotifiedMerge, markNotifiedMerge } from "./store.js";
 
 const notion = new Client({ auth: config.notion.apiKey });
 
@@ -690,6 +691,154 @@ export async function postAssignmentDigest(slackClient: WebClient): Promise<void
   });
 
   console.log(`[digest] Posted digest to channel: ${newBugs.length} new, ${assignments.length} assigned, ${completedBugs.length} completed`);
+}
+
+// ── Merge notifications ─────────────────────────────────────────────────────
+
+// Only look back this far for merged bugs — bounds the query and, combined with
+// the 30-day merge-notified marker, guarantees each bug fires at most once.
+const MERGE_NOTIFY_WINDOW_MS = 7 * 24 * 60 * 60_000; // 7 days
+
+// Floor the lookback at process start so a fresh deploy doesn't retroactively
+// congratulate threads for bugs that merged days ago — only merges that happen
+// while the feature is live trigger a reply. (Also protects the in-memory store
+// mode, whose markers reset on restart, from re-notifying.)
+const MERGE_NOTIFY_EPOCH = new Date().toISOString();
+
+interface MergedBug {
+  bugId: string;
+  taskUrl: string;
+  title: string;
+  assigneeIds: string[];
+}
+
+/**
+ * Find bug-type eng tasks marked Done (we treat Done as "merged") since the
+ * cutoff that link back to a Bug Tracker page. Returns the linked bug id plus
+ * the assignee(s) and eng-task URL needed to build the thread reply.
+ */
+async function getRecentlyMergedBugs(cutoff: string): Promise<MergedBug[]> {
+  const response = await notion.dataSources.query({
+    data_source_id: config.notion.engTaskTracker.dataSourceId,
+    filter: {
+      and: [
+        { property: "Ticket Type", multi_select: { contains: "Bug" } },
+        { property: "Status", status: { equals: "Done" } },
+        { property: "Completed At", date: { on_or_after: cutoff } },
+        { property: "Bug Tracker", relation: { is_not_empty: true } },
+      ],
+    },
+  });
+
+  const bugs: MergedBug[] = [];
+  for (const page of response.results.filter(isFullPage)) {
+    const nameProp = page.properties["Task name"];
+    const rawTitle =
+      nameProp.type === "title" ? nameProp.title[0]?.plain_text ?? "(untitled)" : "(untitled)";
+    // Eng tasks are created with a 🪲 prefix — drop it for the reporter-facing reply.
+    const title = rawTitle.replace(/^🪲\s*/, "");
+
+    const assigneeProp = page.properties.Assignee;
+    const assigneeIds =
+      assigneeProp?.type === "people" ? assigneeProp.people.map((p) => p.id) : [];
+
+    const relProp = page.properties["Bug Tracker"];
+    const bugId = relProp?.type === "relation" ? relProp.relation[0]?.id ?? null : null;
+    if (!bugId) continue;
+
+    bugs.push({ bugId, taskUrl: page.url, title, assigneeIds });
+  }
+  return bugs;
+}
+
+/** Read a bug page's Slack Thread URL (null if unset or the page is partial). */
+async function getBugSlackThreadUrl(bugId: string): Promise<string | null> {
+  const page = await notion.pages.retrieve({ page_id: bugId });
+  if (!isFullPage(page)) return null;
+  const prop = page.properties["Slack Thread URL"];
+  return prop?.type === "url" ? prop.url : null;
+}
+
+/**
+ * Poll for bugs whose linked eng task just flipped to Done and post a one-time
+ * "your bug got merged" reply in the original Slack thread, thanking the
+ * engineer who fixed it. Runs in the same loop as syncBugsToEngTasks.
+ */
+export async function notifyMergedBugs(slackClient: WebClient): Promise<void> {
+  try {
+    const windowStart = new Date(Date.now() - MERGE_NOTIFY_WINDOW_MS).toISOString();
+    const cutoff = windowStart > MERGE_NOTIFY_EPOCH ? windowStart : MERGE_NOTIFY_EPOCH;
+
+    const merged = await getRecentlyMergedBugs(cutoff);
+    if (merged.length === 0) return;
+
+    let notified = 0;
+    for (const bug of merged) {
+      if (notified >= MAX_SYNC_BATCH) break; // cap blast radius per cycle
+      try {
+        if (await hasNotifiedMerge(bug.bugId)) continue;
+
+        const slackThreadUrl = await getBugSlackThreadUrl(bug.bugId);
+        if (!slackThreadUrl) {
+          // Nothing to reply to — mark it so we don't re-fetch this page every cycle.
+          await markNotifiedMerge(bug.bugId);
+          continue;
+        }
+
+        const posted = await replyInThreadWithMerge(slackClient, bug, slackThreadUrl);
+        if (posted) {
+          await markNotifiedMerge(bug.bugId);
+          notified++;
+          console.log(`[merge] Notified thread that "${bug.title}" merged`);
+        }
+      } catch (err) {
+        console.error(`[merge] Failed to notify merge for "${bug.title}" (${bug.bugId}):`, err);
+      }
+    }
+  } catch (err) {
+    console.error("[merge] Failed to query merged bugs:", err);
+  }
+}
+
+/** Post the "your bug got merged" reply in the thread. Returns false if unsendable. */
+async function replyInThreadWithMerge(
+  slackClient: WebClient,
+  bug: MergedBug,
+  slackThreadUrl: string
+): Promise<boolean> {
+  const parsed = parseSlackUrl(slackThreadUrl);
+  if (!parsed) return false;
+
+  const assigneeMentions: string[] = [];
+  for (const notionId of bug.assigneeIds) {
+    const slackId = await notionUserToSlackId(notionId, slackClient);
+    if (slackId) assigneeMentions.push(`<@${slackId}>`);
+  }
+
+  // Reporter = whoever started the thread (matches replyInThreadWithEngTask).
+  const threadResult = await slackClient.conversations.replies({
+    channel: parsed.channel,
+    ts: parsed.threadTs,
+    limit: 1,
+  });
+  const reporterUserId = (threadResult.messages?.[0] as any)?.user;
+  const reporterMention = reporterUserId ? `<@${reporterUserId}>` : "there";
+  const assigneeText =
+    assigneeMentions.length > 0 ? assigneeMentions.join(", ") : "the eng team";
+
+  const text =
+    `:tada: ${reporterMention} good news — the bug you reported just got merged! :rocket:\n\n` +
+    `• *Fixed:* <${bug.taskUrl}|${bug.title}>\n` +
+    `• *Reported by:* ${reporterMention}\n` +
+    `• *Fixed by:* ${assigneeText}\n\n` +
+    `Big thanks to ${assigneeText} for the fix! :clap:`;
+
+  await slackClient.chat.postMessage({
+    channel: parsed.channel,
+    thread_ts: parsed.threadTs,
+    text,
+  });
+  return true;
 }
 
 /**

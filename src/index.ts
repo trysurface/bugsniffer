@@ -1,7 +1,7 @@
 import { validateConfig, config } from "./config.js";
 import { createSlackApp } from "./slack.js";
 import { startHealthServer } from "./health.js";
-import { syncBugsToEngTasks, postAssignmentDigest } from "./notion.js";
+import { syncBugsToEngTasks, notifyMergedBugs, postAssignmentDigest } from "./notion.js";
 
 const ENG_TASK_SYNC_INTERVAL_MS = 10_000; // 10 seconds (gap between runs, not a fixed clock)
 const DIGEST_INTERVAL_MS = 12 * 60 * 60_000; // 12 hours
@@ -17,6 +17,7 @@ function startEngTaskSyncLoop(slackClient: Parameters<typeof syncBugsToEngTasks>
   const tick = async (): Promise<void> => {
     try {
       await syncBugsToEngTasks(slackClient); // catches internally today; guard anyway
+      await notifyMergedBugs(slackClient); // congratulate threads for bugs that merged
     } catch (err) {
       console.error("[sync] Unexpected error in sync loop:", err);
     } finally {

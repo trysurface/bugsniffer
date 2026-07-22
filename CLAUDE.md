@@ -33,7 +33,7 @@ bugsniffer is a background service that monitors the `#surface_product_feedback`
 Slack (Socket Mode) → Message handler → Claude classifier → Notion ticket creator → Slack thread reply
 ```
 
-**Stack:** TypeScript, Node.js 20, Slack Bolt, Notion SDK, Anthropic SDK
+**Stack:** TypeScript 7 (native compiler), Node.js 20, Slack Bolt, Notion SDK, Anthropic SDK
 
 **Source layout:**
 - `src/index.ts` — entry point, starts health server + Slack app + eng task sync polling
@@ -65,7 +65,7 @@ The classifier prompt is in `src/classifier.ts` → `buildPrompt()`. If classifi
 
 ### Bug Tracker → Eng Task Tracker sync
 
-Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with the Eng Task Tracker. Every 10s (self-scheduling loop in `src/index.ts` — waits 10s *after* each run finishes, so runs never overlap; overlap would double-create tasks since the relation isn't populated until a run completes), we poll for bugs with an Owner but no Task Tracker Link. For each, we verify no eng task already exists (dedup check against Eng Task Tracker), then create one (🪲-prefixed title, same assignee, Ticket Type: Bug, page content with reported date + Slack link). Sync is capped at 5 bugs per cycle to limit blast radius. We post a threaded reply in the original Slack thread (@-ing the assigned engineer and the reporter). Every 12 hours, a digest of all assignments since the last report is posted to the main channel. Notion→Slack user mapping uses email lookup (cached). See `syncBugsToEngTasks()` and `postAssignmentDigest()` in `src/notion.ts`.
+Bug Tracker has a two-way relation ("Task Tracker Link" ↔ "Bug Tracker") with the Eng Task Tracker. Every 10s (self-scheduling loop in `src/index.ts` — waits 10s *after* each run finishes, so runs never overlap; overlap would double-create tasks since the relation isn't populated until a run completes), we poll for bugs with an Owner but no Task Tracker Link. For each, we verify no eng task already exists (dedup check against Eng Task Tracker), then create one (🪲-prefixed title, same assignee, Ticket Type: Bug, page content with reported date + Slack link). Sync is capped at 5 bugs per cycle to limit blast radius. We post a threaded reply in the original Slack thread (@-ing the assigned engineer and the reporter). Every 12 hours, a digest of all assignments since the last report is posted to the main channel. Notion→Slack user mapping uses email lookup (cached). See `syncBugsToEngTasks()` and `postAssignmentDigest()` in `src/notion.ts`. When a bug's linked eng task flips to **Done** (treated as "merged"), the same 10s loop posts a one-time congratulation in the original thread thanking the assignee (`notifyMergedBugs()`; deduped via a `bugsniffer:merged:<bugId>` store marker, and floored at process start so a deploy never backfills old threads).
 
 ## Environment variables
 
@@ -138,6 +138,8 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-22** — Bug reporters get told when their bug ships: `notifyMergedBugs()` polls (same 10s loop) for Done bug-type eng tasks and posts a one-time "your bug got merged" thread reply thanking the assignee. Deduped via a `bugsniffer:merged:` store marker + floored at process start (no backfill spam). Also bumped TypeScript 5.9 → 7.0 (native compiler); tsconfig unchanged, commonjs emit + declarations verified.
+
 - **2026-07-14** — Fixed silent eng-task sync outage: the Bug Tracker's `created` property was renamed to `Bug Report Created On` in Notion. `getBugsNeedingEngTask()` read `page.properties.created` → `undefined.type` → threw every cycle, so no eng tasks were created for any assigned bug. Updated both references (`getBugsNeedingEngTask`, `getNewBugsSince` digest filter) to the new name and made the `.type` read optional-chained. Also: sync poll 60s→10s and switched from `setInterval` to a self-scheduling loop so runs can't overlap (overlap → duplicate eng tasks).
 - **2026-07-13** — Ambiguity widened: small UX affordances on existing UI ("X should be clickable", hover info) now also trigger the Yes/No prompt. Larger feature requests (`is_feature_request`) get a reply pointing at the Lead Ops / Content Ops Roadmaps instead of a silent skip; design opinions, questions, chit-chat stay silent.
 - **2026-07-10** — Ambiguous reports (borderline bug / improvement) now get in-thread Yes/No buttons instead of a silent skip (`is_ambiguous` in classifier, `CONFIRM:` store prefix; needs Interactivity enabled in the Slack app). Ticket threads stay watched (`TICKET:` prefix): detail-adding replies are appended to the Notion page with screenshots (`appendThreadUpdate`), 📝 reaction ack (needs `reactions:write`). Also fixed needs-detail→dupe path deleting the `DUPE:` entry, which broke dispute handling.
@@ -146,4 +148,3 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 - **2026-07-07** — Added `Reporter` (person) to Bug Tracker, auto-set to the Slack message author. `slackUserToNotionId()` in `src/notion.ts` maps Slack sender → Notion member by email (reverse of `notionUserToSlackId`, cached via workspace member list). For thread follow-ups the reporter is the thread's root author, not the replier.
 - **2026-07-01** — Fixed 2-week silent outage: classifier model `claude-sonnet-4-20250514` had been retired (404 → swallowed → bot classified everything as "not a bug"). Switched default to `claude-sonnet-5`. Also removed stale `Status` references from Bug Tracker queries (property was deleted from the DB); dedup now scopes by recency (`getRecentBugs`, 90d) instead of status. Hardened classifier text extraction to scan for the text block and strip ```json markdown fences (sonnet-5 fences inconsistently, which broke JSON.parse). Ticket-created Slack reply now links the created bug page instead of the DB "Everything" view.
 - **2026-04-13** — Eng task sync hardening: dedup check, batch cap (5/cycle), thread-only replies + 12-hour assignment digest to main channel.
-- **2026-03-26** — Eng Task Tracker sync: auto-create linked eng tasks when bug Owner assigned; Slack notifications @-ing engineer + reporter.
