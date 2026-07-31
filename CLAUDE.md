@@ -138,6 +138,7 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
+- **2026-07-31** — classifier: slow performance is always a bug (was "improvement" → ambiguous Yes/No prompt). Perf complaints now auto-file tickets.
 - **2026-07-22** — Bug reporters get told when their bug ships: `notifyMergedBugs()` polls (same 10s loop) for Done bug-type eng tasks and posts a one-time "your bug got merged" thread reply thanking the assignee. Deduped via a `bugsniffer:merged:` store marker + floored at process start (no backfill spam). Also bumped TypeScript 5.9 → 7.0 (native compiler); tsconfig unchanged, commonjs emit + declarations verified.
 
 - **2026-07-14** — Fixed silent eng-task sync outage: the Bug Tracker's `created` property was renamed to `Bug Report Created On` in Notion. `getBugsNeedingEngTask()` read `page.properties.created` → `undefined.type` → threw every cycle, so no eng tasks were created for any assigned bug. Updated both references (`getBugsNeedingEngTask`, `getNewBugsSince` digest filter) to the new name and made the `.type` read optional-chained. Also: sync poll 60s→10s and switched from `setInterval` to a self-scheduling loop so runs can't overlap (overlap → duplicate eng tasks).
