@@ -7,6 +7,7 @@ import {
   getPendingThread,
   setPendingThread,
   deletePendingThread,
+  listPendingThreads,
 } from "./store.js";
 
 /** Slack file object (subset of fields we use). */
@@ -293,7 +294,7 @@ async function processMessage(
   if (!result.is_bug) {
     if (result.is_ambiguous) {
       console.log(`  → Ambiguous (borderline bug / improvement). Asking whether to file a ticket.`);
-      await askTicketConfirmation(result.suggested_title, text, message.ts!, say);
+      await askTicketConfirmation(result.suggested_title, text, message.ts!, say, message.user);
       return;
     }
     if (result.is_feature_request) {
@@ -513,11 +514,12 @@ async function askTicketConfirmation(
   suggestedTitle: string | null,
   text: string,
   messageTs: string,
-  say: Function
+  say: Function,
+  reporter?: string
 ): Promise<void> {
   await setPendingThread(
     messageTs,
-    CONFIRM_PREFIX + JSON.stringify({ text, title: suggestedTitle })
+    CONFIRM_PREFIX + JSON.stringify({ text, title: suggestedTitle, reporter, reminders: 0 })
   );
 
   const prompt =
@@ -548,6 +550,81 @@ async function askTicketConfirmation(
       },
     ],
   });
+}
+
+// Unanswered Yes/No prompts get the reporter pinged in-thread every
+// CONFIRM_REMINDER_INTERVAL_MS, at most CONFIRM_MAX_REMINDERS times.
+const CONFIRM_REMINDER_INTERVAL_MS = 4 * 60 * 60_000; // 4 hours
+const CONFIRM_MAX_REMINDERS = 3;
+
+interface ConfirmMeta {
+  text: string;
+  title: string | null;
+  reporter?: string;
+  reminders?: number;
+  lastRemindAt?: number;
+}
+
+/**
+ * Sweep pending CONFIRM: threads and ping the reporter on ones where the
+ * Yes/No buttons have sat unanswered. Called periodically from index.ts.
+ */
+export async function remindStaleConfirmations(client: any): Promise<void> {
+  const pending = await listPendingThreads();
+  for (const { threadTs, value } of pending) {
+    if (!value.startsWith(CONFIRM_PREFIX)) continue;
+
+    let meta: ConfirmMeta;
+    try {
+      meta = JSON.parse(value.slice(CONFIRM_PREFIX.length));
+    } catch {
+      continue;
+    }
+
+    const reminders = meta.reminders ?? 0;
+    if (reminders >= CONFIRM_MAX_REMINDERS) continue;
+
+    // Time since the last ping, or since the report itself (its ts is the key)
+    const anchor = meta.lastRemindAt ?? parseFloat(threadTs) * 1000;
+    if (Date.now() - anchor < CONFIRM_REMINDER_INTERVAL_MS) continue;
+
+    // Entries written before reminders existed don't carry the reporter
+    let reporter = meta.reporter;
+    if (!reporter) {
+      try {
+        reporter = await getThreadRootAuthor(client, config.slack.channelId, threadTs);
+      } catch {
+        // transient Slack error — retry next sweep
+      }
+    }
+    if (!reporter) continue;
+
+    const n = reminders + 1;
+    const tail =
+      n >= CONFIRM_MAX_REMINDERS ? " — last reminder, I'll leave it alone after this" : "";
+    try {
+      await client.chat.postMessage({
+        channel: config.slack.channelId,
+        thread_ts: threadTs,
+        text: `:wave: <@${reporter}> — still waiting on an answer here: should I file this as a ticket? Use the Yes/No buttons above. (reminder ${n}/${CONFIRM_MAX_REMINDERS}${tail})`,
+      });
+    } catch (err) {
+      console.error(`[remind] Failed to post reminder in ${threadTs}:`, err);
+      continue; // don't advance the counter for a ping that never landed
+    }
+
+    // A button click mid-sweep deletes the entry (or moves it to TICKET:) —
+    // writing our stale copy back would resurrect dead buttons. Skip if changed.
+    const current = await getPendingThread(threadTs);
+    if (current !== value) continue;
+
+    await setPendingThread(
+      threadTs,
+      CONFIRM_PREFIX +
+        JSON.stringify({ ...meta, reporter, reminders: n, lastRemindAt: Date.now() })
+    );
+    console.log(`[remind] Pinged reporter in ${threadTs} (${n}/${CONFIRM_MAX_REMINDERS})`);
+  }
 }
 
 /** Handle a click on the Yes/No ticket confirmation buttons. */

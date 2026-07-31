@@ -16,7 +16,7 @@ All responses are debounced by 3 seconds (`DEBOUNCE_MS` in `src/slack.ts`). This
 3. **Not a bug, not ambiguous** → two sub-cases:
    - **Feature request** (substantial new functionality — new modes, pages, workflows, integrations) → one-off threaded reply encouraging the reporter to add it themselves to the Lead Ops Roadmap or Content Ops Roadmap (links in `src/slack.ts`). No ticket, no thread tracking — the conversation ends there.
    - **Everything else** (design opinions, questions, chit-chat) → silently ignored.
-4. **Ambiguous** (borderline bug-vs-not, an improvement to existing functionality — slow performance, "should also show X", "Improvement Needed" posts — or a small UX affordance on existing UI, e.g. "X should be clickable") → bot posts an in-thread prompt with **Yes/No buttons** asking whether to file a ticket (`askTicketConfirmation`). Thread stored with `CONFIRM:` prefix (JSON: text + suggested title).
+4. **Ambiguous** (borderline bug-vs-not, an improvement to existing functionality — "should also show X", "Improvement Needed" posts — or a small UX affordance on existing UI, e.g. "X should be clickable"; slow performance is NOT ambiguous, it's always a bug) → bot posts an in-thread prompt with **Yes/No buttons** asking whether to file a ticket (`askTicketConfirmation`). Thread stored with `CONFIRM:` prefix (JSON: text, suggested title, reporter, reminder state).
    - **Yes** → ticket created immediately (no dedup check — a human explicitly asked), buttons replaced with a confirmation. Thread transitions to `TICKET:` watching.
    - **No** → buttons replaced with a dismissal note, pending entry cleared.
    - Text replies in these threads are ignored — the buttons are the interface.
@@ -33,6 +33,7 @@ Thread replies are only processed if their `thread_ts` is in the pending store. 
 
 ### Confirmation threads (`CONFIRM:` prefix)
 - Awaiting a Yes/No button click on the "is this worth a ticket?" prompt. Text replies are ignored.
+- **Unanswered prompts get reminders:** a sweep loop (`remindStaleConfirmations`, every minute from `src/index.ts`) pings the reporter in-thread every 4 hours, up to 3 times (`CONFIRM_REMINDER_INTERVAL_MS` / `CONFIRM_MAX_REMINDERS` in `src/slack.ts`), then goes quiet. Reminder count and last-ping time live in the `CONFIRM:` JSON; the sweep re-checks the entry after posting so a button click mid-sweep isn't resurrected.
 
 ### Ticket threads (`TICKET:` prefix)
 - The thread already has a Notion ticket (JSON value: `pageId` + `lastTs` watermark).
@@ -56,5 +57,5 @@ Thread replies are only processed if their `thread_ts` is in the pending store. 
 
 - Backed by Redis (`REDIS_URL`) with 30-day TTL. Falls back to in-memory `Map` if unset.
 - Keys: `thread_ts` of the parent message.
-- Values by prefix: no prefix = needs-detail (original text); `DUPE:` = duplicate-dispute (original text); `CONFIRM:` = awaiting Yes/No buttons (JSON: text, title); `TICKET:` = ticket exists, watching for detail (JSON: pageId, lastTs watermark).
+- Values by prefix: no prefix = needs-detail (original text); `DUPE:` = duplicate-dispute (original text); `CONFIRM:` = awaiting Yes/No buttons (JSON: text, title, reporter, reminders, lastRemindAt); `TICKET:` = ticket exists, watching for detail (JSON: pageId, lastTs watermark).
 - Ticket creation transitions the thread to `TICKET:` (it stays watched for ~30 days via the TTL); a dismissed confirmation or resolved dispute clears the entry.

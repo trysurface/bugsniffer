@@ -1,10 +1,11 @@
 import { validateConfig, config } from "./config.js";
-import { createSlackApp } from "./slack.js";
+import { createSlackApp, remindStaleConfirmations } from "./slack.js";
 import { startHealthServer } from "./health.js";
 import { syncBugsToEngTasks, notifyMergedBugs, postAssignmentDigest } from "./notion.js";
 
 const ENG_TASK_SYNC_INTERVAL_MS = 10_000; // 10 seconds (gap between runs, not a fixed clock)
 const DIGEST_INTERVAL_MS = 12 * 60 * 60_000; // 12 hours
+const CONFIRM_REMINDER_SWEEP_MS = 60_000; // 1 minute (ping cadence itself lives in slack.ts)
 
 /**
  * Self-scheduling sync loop: waits ENG_TASK_SYNC_INTERVAL_MS *after* each run
@@ -27,6 +28,20 @@ function startEngTaskSyncLoop(slackClient: Parameters<typeof syncBugsToEngTasks>
   tick();
 }
 
+/** Self-scheduling (non-overlapping) sweep for unanswered Yes/No prompts. */
+function startConfirmReminderLoop(slackClient: unknown): void {
+  const tick = async (): Promise<void> => {
+    try {
+      await remindStaleConfirmations(slackClient);
+    } catch (err) {
+      console.error("[remind] Unexpected error in reminder loop:", err);
+    } finally {
+      setTimeout(tick, CONFIRM_REMINDER_SWEEP_MS);
+    }
+  };
+  tick();
+}
+
 async function main(): Promise<void> {
   validateConfig();
 
@@ -38,6 +53,7 @@ async function main(): Promise<void> {
   // Start polling for bugs that need eng task tracker tickets
   const slackClient = app.client;
   startEngTaskSyncLoop(slackClient);
+  startConfirmReminderLoop(slackClient);
 
   // Post assignment digest to channel every 12 hours
   setInterval(() => postAssignmentDigest(slackClient), DIGEST_INTERVAL_MS);

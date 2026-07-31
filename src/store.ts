@@ -51,6 +51,30 @@ export async function setPendingThread(threadTs: string, text: string): Promise<
   }
 }
 
+/** All pending threads (used by the confirmation-reminder sweep). */
+export async function listPendingThreads(): Promise<
+  Array<{ threadTs: string; value: string }>
+> {
+  const r = getRedis();
+  if (!r) {
+    return [...memStore.entries()].map(([threadTs, value]) => ({ threadTs, value }));
+  }
+  const keys: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, batch] = await r.scan(cursor, "MATCH", KEY_PREFIX + "*", "COUNT", 100);
+    cursor = next;
+    keys.push(...batch);
+  } while (cursor !== "0");
+  const out: Array<{ threadTs: string; value: string }> = [];
+  for (const key of keys) {
+    const value = await r.get(key);
+    // Value may expire between SCAN and GET
+    if (value !== null) out.push({ threadTs: key.slice(KEY_PREFIX.length), value });
+  }
+  return out;
+}
+
 export async function deletePendingThread(threadTs: string): Promise<void> {
   const r = getRedis();
   if (r) await r.del(KEY_PREFIX + threadTs);
