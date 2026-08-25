@@ -10,6 +10,13 @@ const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
  * yield "" and silently break JSON parsing.
  */
 function extractText(response: Anthropic.Message): string {
+  // A truncated response is never valid JSON — fail loudly with the real cause
+  // instead of an opaque "Unterminated string in JSON" from JSON.parse.
+  if (response.stop_reason === "max_tokens") {
+    throw new Error(
+      `Claude response truncated at max_tokens (${response.usage.output_tokens} output tokens) — raise the budget`
+    );
+  }
   const block = response.content.find((b) => b.type === "text");
   let text = block?.type === "text" ? block.text.trim() : "";
   // Some models wrap JSON in a ```json … ``` markdown fence despite being told
@@ -108,7 +115,7 @@ export async function classifyMessage(
   try {
     const response = await anthropic.messages.create({
       model: config.anthropic.model,
-      max_tokens: 500,
+      max_tokens: 1500,
       messages: [
         { role: "user", content: buildPrompt(text, hasFiles, hasLoomLink) },
       ],
@@ -153,7 +160,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   try {
     const response = await anthropic.messages.create({
       model: config.anthropic.model,
-      max_tokens: 200,
+      max_tokens: 600,
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -190,7 +197,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   try {
     const response = await anthropic.messages.create({
       model: config.anthropic.model,
-      max_tokens: 200,
+      max_tokens: 600,
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -250,7 +257,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   try {
     const response = await anthropic.messages.create({
       model: config.anthropic.model,
-      max_tokens: 300,
+      max_tokens: 1000,
       messages: [{ role: "user", content: prompt }],
     });
 
