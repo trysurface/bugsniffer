@@ -1,7 +1,7 @@
 import { App, type BlockAction, type ButtonAction } from "@slack/bolt";
 import { config } from "./config.js";
-import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe } from "./classifier.js";
-import { createBugTicket, getOpenBugsForDedup, appendSlackLink, appendThreadUpdate, slackUserToNotionId } from "./notion.js";
+import { classifyMessage, findDuplicate, isProvidingBugDetail, isDisputingDupe, draftIdea } from "./classifier.js";
+import { createBugTicket, createRoadmapIdea, getOpenBugsForDedup, appendSlackLink, appendThreadUpdate, slackUserToNotionId } from "./notion.js";
 import {
   hasPendingThread,
   getPendingThread,
@@ -27,12 +27,6 @@ export interface SlackFile {
 const DUPE_PREFIX = "DUPE:";
 const CONFIRM_PREFIX = "CONFIRM:";
 const TICKET_PREFIX = "TICKET:";
-
-// Where we point people for substantial feature requests (self-serve)
-const LEAD_OPS_ROADMAP_URL =
-  "https://app.notion.com/p/withsurface/Lead-Ops-Roadmap-38444c625b9f8063a196edd6ddc5b498";
-const CONTENT_OPS_ROADMAP_URL =
-  "https://app.notion.com/p/withsurface/Content-Ops-Roadmap-38344c625b9f80948b9fea03f1f4bc00";
 
 /** Subset of the Slack message event fields we actually use. */
 interface SlackMessage {
@@ -298,13 +292,11 @@ export async function processMessage(
       return;
     }
     if (result.is_feature_request) {
-      // Larger feature requests: point at the roadmaps, end the conversation
-      // there — no ticket, no buttons, no thread tracking.
-      console.log(`  → Feature request. Pointing at the roadmaps.`);
-      await say({
-        text: `:bulb: This looks like a feature request rather than a bug, so I haven't filed it in the Bug Tracker. To get it on the roadmap, add it to the <${LEAD_OPS_ROADMAP_URL}|Lead Ops Roadmap> or the <${CONTENT_OPS_ROADMAP_URL}|Content Ops Roadmap> — whichever fits best.`,
-        thread_ts: message.ts,
-      });
+      // Larger feature requests: file on the product Roadmap as an Idea so
+      // they land in the "Ideas from #product-feedback" view. One-off — no
+      // dedup, no buttons, no thread tracking.
+      console.log(`  → Feature request. Filing on the Roadmap as an Idea.`);
+      await createRoadmapIdeaAndConfirm(result.suggested_title, text, files, message.ts!, say, client, message.user);
       return;
     }
     console.log(`  → Not a bug. Skipping.`);
@@ -500,6 +492,42 @@ async function createTicketAndConfirm(
   await say({
     text: `:bug: Added to Bug Tracker: <${ticket.url}|${title}>`,
     thread_ts: threadTs ?? messageTs,
+  });
+}
+
+/** File a feature request as a Roadmap Idea and link it back in the thread. */
+async function createRoadmapIdeaAndConfirm(
+  suggestedTitle: string | null,
+  text: string,
+  files: SlackFile[],
+  messageTs: string,
+  say: Function,
+  client: any,
+  reporterSlackId?: string
+): Promise<void> {
+  const permalinkResponse = await client.chat.getPermalink({
+    channel: config.slack.channelId,
+    message_ts: messageTs,
+  });
+  const slackLink = permalinkResponse.permalink as string;
+
+  let reporterName: string | null = null;
+  if (reporterSlackId) {
+    try {
+      const info = await client.users.info({ user: reporterSlackId });
+      reporterName = info.user?.real_name || info.user?.name || null;
+    } catch (err) {
+      console.warn("[slack] Could not resolve reporter name:", err);
+    }
+  }
+
+  const draft = await draftIdea(text, suggestedTitle);
+  const idea = await createRoadmapIdea(draft, slackLink, text, files, reporterName);
+  console.log(`  → 💡 Created Roadmap idea: ${idea.url}`);
+
+  await say({
+    text: `:bulb: This looks like a feature request rather than a bug, so I've added it to the <${config.notion.roadmap.pageUrl}|Roadmap> as an Idea: <${idea.url}|${draft.title}>. Feel free to edit the page to add detail.`,
+    thread_ts: messageTs,
   });
 }
 

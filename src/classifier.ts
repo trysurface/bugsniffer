@@ -37,9 +37,9 @@ export interface ClassificationResult {
   is_ambiguous: boolean;
   /**
    * True for substantial new-functionality requests (new modes, pages,
-   * integrations). These get a "please add it to a roadmap yourself" reply
-   * instead of a ticket or a confirmation prompt. Only consulted when
-   * is_bug and is_ambiguous are both false.
+   * integrations). These are filed on the product Roadmap as an Idea (see
+   * draftIdea) instead of the Bug Tracker. Only consulted when is_bug and
+   * is_ambiguous are both false.
    */
   is_feature_request: boolean;
   has_sufficient_detail: boolean;
@@ -87,7 +87,7 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   "is_ambiguous": true/false,
   "is_feature_request": true/false,
   "has_sufficient_detail": true/false,
-  "suggested_title": "Short descriptive title for the ticket (if is_bug or is_ambiguous, otherwise null)",
+  "suggested_title": "Short descriptive title for the ticket (if is_bug, is_ambiguous or is_feature_request, otherwise null)",
   "reasoning": "Brief explanation of your classification"
 }
 
@@ -266,5 +266,73 @@ Respond with ONLY a valid JSON object (no markdown, no backticks):
   } catch (err) {
     console.error("[classifier] Failed to check for duplicates:", err);
     return { is_duplicate: false, matching_bug_id: null, reasoning: "Duplicate check failed — defaulting to new ticket." };
+  }
+}
+
+/** Structured write-up of a feature request for the Roadmap "Idea" page. */
+export interface IdeaDraft {
+  title: string;
+  /** One or two sentences: what is being asked for. */
+  summary: string;
+  /** The user problem / motivation behind the ask, as best it can be inferred. */
+  problem: string;
+  /** Concrete proposal — what the feature would do / look like. */
+  proposal: string;
+  /** Things product/eng would need to decide or clarify. */
+  open_questions: string[];
+}
+
+/**
+ * Turn a raw feature-request message into a write-up a product engineer can
+ * act on. Only infers from what's in the message — no invented requirements.
+ * Falls back to a minimal draft built from the raw text if Claude fails, so a
+ * classifier hiccup never blocks filing the idea.
+ */
+export async function draftIdea(text: string, suggestedTitle: string | null): Promise<IdeaDraft> {
+  const fallback: IdeaDraft = {
+    title: suggestedTitle || text.slice(0, 100),
+    summary: text.slice(0, 500),
+    problem: "",
+    proposal: "",
+    open_questions: [],
+  };
+
+  const prompt = `You are helping a product engineering team at Surface (a forms/survey builder SaaS) triage a feature request posted in Slack.
+
+Write it up so an engineer who has never seen the Slack message understands the ask. Be concrete and specific. Only use what is in the message (or can be reasonably inferred from it) — do NOT invent requirements, numbers, or customer names. If a section has no information, keep it to one short sentence saying so.
+
+Respond with ONLY a valid JSON object (no markdown, no backticks):
+{
+  "title": "Short, specific title (imperative or noun phrase, max ~80 chars)",
+  "summary": "1–2 sentences: what is being asked for",
+  "problem": "What user problem or pain motivates this, who is affected",
+  "proposal": "What the feature would concretely do / how it might work, based on the message",
+  "open_questions": ["Things product/eng would need to clarify or decide (0–4 items)"]
+}
+
+Slack message:
+"""
+${text}
+"""`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 1500,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const parsed = JSON.parse(extractText(response)) as Partial<IdeaDraft>;
+    return {
+      title: parsed.title?.trim() || fallback.title,
+      summary: parsed.summary?.trim() || fallback.summary,
+      problem: parsed.problem?.trim() || "",
+      proposal: parsed.proposal?.trim() || "",
+      open_questions: Array.isArray(parsed.open_questions)
+        ? parsed.open_questions.filter((q) => typeof q === "string" && q.trim())
+        : [],
+    };
+  } catch (err) {
+    console.error("[classifier] Failed to draft idea write-up, using raw text:", err);
+    return fallback;
   }
 }

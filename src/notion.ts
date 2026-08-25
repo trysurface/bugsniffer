@@ -2,6 +2,7 @@ import { Client } from "@notionhq/client";
 import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
 import type { WebClient } from "@slack/web-api";
 import type { SlackFile } from "./slack.js";
+import type { IdeaDraft } from "./classifier.js";
 import { config } from "./config.js";
 import { hasNotifiedMerge, markNotifiedMerge } from "./store.js";
 
@@ -60,6 +61,77 @@ export async function createBugTicket(
       block_id: page.id,
       children: blocks,
     });
+  }
+
+  return { id: page.id, url: page.url };
+}
+
+/**
+ * File a feature request on the product Roadmap as Type: Idea (surfaces in the
+ * "Ideas from #product-feedback" view). The page body carries everything the
+ * product eng team needs without opening Slack: the Claude write-up, a link to
+ * the original message, the reporter, the verbatim message, and any
+ * screenshots/videos (images are uploaded so they survive Slack deletion).
+ * Owner is intentionally left blank — it's the engineer who picks it up.
+ */
+export async function createRoadmapIdea(
+  draft: IdeaDraft,
+  slackThreadUrl: string,
+  messageText: string,
+  files: SlackFile[],
+  reporterName: string | null
+): Promise<NotionTicket> {
+  const page = await notion.pages.create({
+    parent: { database_id: config.notion.roadmap.databaseId },
+    properties: {
+      Name: { title: [{ text: { content: draft.title.slice(0, 200) } }] },
+      Type: { select: { name: "Idea" } },
+    },
+  });
+  if (!isFullPage(page)) throw new Error("Notion returned a partial page response");
+
+  const rt = (content: string, extra: Record<string, any> = {}) => ({
+    text: { content: content.slice(0, 2000), ...extra },
+  });
+  const heading = (text: string) => ({ heading_2: { rich_text: [rt(text)] } });
+  const para = (text: string) => ({ paragraph: { rich_text: [rt(text)] } });
+
+  const sourceLine = reporterName
+    ? `Filed from #surface_product_feedback by ${reporterName} — `
+    : `Filed from #surface_product_feedback — `;
+  const blocks: any[] = [
+    {
+      callout: {
+        icon: { type: "emoji", emoji: "💬" },
+        rich_text: [
+          rt(sourceLine),
+          rt("original Slack message", { link: { url: slackThreadUrl } }),
+        ],
+      },
+    },
+    heading("Summary"),
+    para(draft.summary),
+  ];
+  if (draft.problem) blocks.push(heading("Problem / motivation"), para(draft.problem));
+  if (draft.proposal) blocks.push(heading("Proposal"), para(draft.proposal));
+  if (draft.open_questions.length) {
+    blocks.push(heading("Open questions"));
+    for (const q of draft.open_questions) {
+      blocks.push({ bulleted_list_item: { rich_text: [rt(q)] } });
+    }
+  }
+
+  // Verbatim message (quoted) + attachments, reusing the bug content builder
+  blocks.push(heading("Original message"));
+  const original = await buildBugContentBlocks(messageText, files);
+  for (const b of original) {
+    if (b.paragraph) blocks.push({ quote: b.paragraph });
+    else blocks.push(b);
+  }
+
+  // Notion caps a single append at 100 children
+  for (let i = 0; i < blocks.length; i += 100) {
+    await notion.blocks.children.append({ block_id: page.id, children: blocks.slice(i, i + 100) });
   }
 
   return { id: page.id, url: page.url };

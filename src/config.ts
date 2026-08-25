@@ -20,6 +20,14 @@ export const config = {
       sprintsDataSourceId:
         process.env.SPRINTS_DATA_SOURCE_ID || "1c944c62-5b9f-8094-a554-000bb58a8f0c",
     },
+    // Product Roadmap — feature requests are filed here as Type: Idea (they
+    // show up in the "Ideas from #product-feedback" view).
+    roadmap: {
+      databaseId:
+        process.env.ROADMAP_DATABASE_ID || "38444c625b9f8045bc63cee7262dfff7",
+      pageUrl:
+        "https://app.notion.com/p/withsurface/Roadmap-38444c625b9f8063a196edd6ddc5b498",
+    },
   },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY!,
