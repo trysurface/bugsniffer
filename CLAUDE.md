@@ -120,13 +120,12 @@ See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Ke
 
 ## Future work
 
-- **Tune classification:** Edit prompt in `src/classifier.ts` → `buildPrompt()`
-- **New Notion fields:** Update `src/notion.ts` → `createBugTicket()` + DB schema
+- **Tune classification:** `src/classifier.ts` → `buildPrompt()`. **New Notion fields:** `src/notion.ts` → `createBugTicket()` + DB schema
 - **Emoji triage:** `reaction_added` event already subscribed — implement handler in `src/slack.ts`
 
 ## Manual data fixes via MCP
 
-Notion and Slack MCP servers are configured for this project. Use them in Claude Code to query and fix data directly (e.g. correcting Slack Thread URLs, backfilling missed tickets, fixing bot replies in wrong threads). See `claude mcp list` for configured servers.
+Notion and Slack MCP servers are configured for this project. Use them to query and fix data directly (wrong Slack Thread URLs, bot replies in wrong threads); for missed tickets use the replay CLI instead.
 
 **When manual fixes are needed, always review app code to diagnose why.** Manual intervention (wrong Notion data, missed bug reports, bot replying in the wrong place, not responding at all) signals a code bug — fix the root cause, not just the data.
 
