@@ -132,7 +132,6 @@ Notion and Slack MCP servers are configured for this project. Use them to query 
 ## Gotchas
 
 - **Never use `as any` to silence type errors.** If the SDK types don't match, check the SDK version's actual API surface (e.g. Notion SDK v5 moved `databases.query` → `dataSources.query`). Casting hides runtime errors.
-- Slack Socket Mode requires the `SLACK_APP_TOKEN` (app-level token), separate from the bot token
 - The Yes/No buttons require **Interactivity** toggled on in the Slack app config (payloads arrive via Socket Mode; no Request URL) — without it, clicks silently do nothing
 - The bot must be invited to the channel (`/invite @BotName`) or it won't receive messages
 - The Notion integration must be shared with both the Bug Tracker and Eng Task Tracker databases (database ⋯ → Connections → Add)
