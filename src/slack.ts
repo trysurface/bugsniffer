@@ -263,7 +263,7 @@ async function handleMessage(
 }
 
 /** Called after the debounce window closes. */
-async function processMessage(
+export async function processMessage(
   message: SlackMessage,
   say: Function,
   client: any

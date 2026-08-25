@@ -43,6 +43,7 @@ Slack (Socket Mode) → Message handler → Claude classifier → Notion ticket 
 - `src/notion.ts` — Notion ticket creation + Bug→Eng Task Tracker sync
 - `src/store.ts` — pending thread persistence (Redis or in-memory fallback)
 - `src/health.ts` — HTTP health check server (Railway needs a PORT listener)
+- `src/replay.ts` — CLI to re-run `processMessage()` for missed Slack messages (see Debugging)
 
 ## How the classification works
 
@@ -102,6 +103,8 @@ Railway env vars are set in the Railway dashboard (not committed).
 
 **Debugging:** Railway CLI is linked to the `bugsniffer` service. Use `railway logs -n 80` to fetch recent logs, or `railway logs` to stream live. Always check logs after deploying new features.
 
+**Replaying missed messages:** `railway run env REDIS_URL=<REDIS_PUBLIC_URL> npm run replay -- <message_ts> …` re-runs the live pipeline for specific top-level messages — prefer it over hand-filing via MCP. `REDIS_URL` must be overridden with the public URL (`railway variables -s Redis`) since `redis.railway.internal` only resolves inside Railway.
+
 ## Message filtering & thread loop
 
 See [`docs/slack-processing.md`](docs/slack-processing.md) for the full flow. Key points:
@@ -138,10 +141,9 @@ Notion and Slack MCP servers are configured for this project. Use them in Claude
 
 ## Changelog
 
-- **2026-08-25** — Fixed silent skips from truncated classifier output: `max_tokens` (500/300/200) was too small for the model's verbose `reasoning`, so JSON was cut mid-string → `JSON.parse` threw → message fell back to "not a bug" (and dedup fell back to "not a dupe"). Raised budgets to 1500/1000/600 and `extractText()` now throws a clear error on `stop_reason === "max_tokens"` instead of an opaque parse error.
+- **2026-08-25** — Fixed silent skips from truncated classifier output: `max_tokens` (500/300/200) was too small for the model's verbose `reasoning`, so JSON was cut mid-string → `JSON.parse` threw → message fell back to "not a bug" (and dedup fell back to "not a dupe"). Raised budgets to 1500/1000/600 and `extractText()` now throws a clear error on `stop_reason === "max_tokens"` instead of an opaque parse error. Added `src/replay.ts` and replayed the 2 messages that were skipped.
 - **2026-07-31** — classifier: slow performance is always a bug (was ambiguous → Yes/No prompt); perf complaints auto-file. Unanswered Yes/No prompts now nag: `remindStaleConfirmations()` (1min sweep from index.ts) pings the reporter in-thread every 4h, max 3 times; state in the `CONFIRM:` JSON, new `listPendingThreads()` in store.
 - **2026-07-22** — Bug reporters get told when their bug ships: `notifyMergedBugs()` polls (same 10s loop) for Done bug-type eng tasks and posts a one-time "your bug got merged" thread reply thanking the assignee. Deduped via a `bugsniffer:merged:` store marker + floored at process start (no backfill spam). Also bumped TypeScript 5.9 → 7.0 (native compiler); tsconfig unchanged, commonjs emit + declarations verified.
-
 - **2026-07-14** — Fixed silent eng-task sync outage: the Bug Tracker's `created` property was renamed to `Bug Report Created On` in Notion. `getBugsNeedingEngTask()` read `page.properties.created` → `undefined.type` → threw every cycle, so no eng tasks were created for any assigned bug. Updated both references (`getBugsNeedingEngTask`, `getNewBugsSince` digest filter) to the new name and made the `.type` read optional-chained. Also: sync poll 60s→10s and switched from `setInterval` to a self-scheduling loop so runs can't overlap (overlap → duplicate eng tasks).
 - **2026-07-13** — Ambiguity widened: small UX affordances on existing UI ("X should be clickable", hover info) now also trigger the Yes/No prompt. Larger feature requests (`is_feature_request`) get a reply pointing at the Lead Ops / Content Ops Roadmaps instead of a silent skip; design opinions, questions, chit-chat stay silent.
 - **2026-07-10** — Ambiguous reports (borderline bug / improvement) now get in-thread Yes/No buttons instead of a silent skip (`is_ambiguous` in classifier, `CONFIRM:` store prefix; needs Interactivity enabled in the Slack app). Ticket threads stay watched (`TICKET:` prefix): detail-adding replies are appended to the Notion page with screenshots (`appendThreadUpdate`), 📝 reaction ack (needs `reactions:write`). Also fixed needs-detail→dupe path deleting the `DUPE:` entry, which broke dispute handling.
